@@ -17,12 +17,12 @@
 
 ## 安装
 
-将完整的 `nekro_plugin_angel_memory` 目录复制到 NekroAgent 工作插件目录：
+将完整的 `nekro_angel_memory` 目录复制到 NekroAgent 工作插件目录：
 
 ```text
 nekro-agent/
 └── plugins/
-    └── nekro_plugin_angel_memory/
+    └── nekro_angel_memory/
         ├── __init__.py
         ├── plugin.py
         ├── main.py
@@ -38,7 +38,7 @@ nekro-agent/
 运行时数据存储在 NekroAgent 原生插件路径下：
 
 ```text
-NEKRO_DATA_DIR/plugin_data/luoxiQAQ.nekro_plugin_angel_memory/
+NEKRO_DATA_DIR/plugin_data/luoxiQAQ.nekro_angel_memory/
 ```
 
 SQLite 数据库为该目录下的 `angel_memory.sqlite3`。
@@ -63,7 +63,7 @@ SQLite 数据库为该目录下的 `angel_memory.sqlite3`。
 NekroAgent 将认证插件路由挂载在：
 
 ```text
-/plugins/luoxiQAQ.nekro_plugin_angel_memory
+/plugins/luoxiQAQ.nekro_angel_memory
 ```
 
 以下端点需要 NekroAgent 管理员会话：
@@ -84,9 +84,9 @@ NekroAgent 将认证插件路由挂载在：
 导出原始插件数据为 JSON，或指向兼容的 SQLite 数据库，然后在 NekroAgent 仓库根目录运行：
 
 ```bash
-python -m plugins.nekro_plugin_angel_memory.migrate_astrbot \
+python -m plugins.nekro_angel_memory.migrate_astrbot \
   /path/to/angel-memory-backup.json \
-  /path/to/nekro-data/plugin_data/luoxiQAQ.nekro_plugin_angel_memory/angel_memory.sqlite3 \
+  /path/to/nekro-data/plugin_data/luoxiQAQ.nekro_angel_memory/angel_memory.sqlite3 \
   --chat-key onebot_v11-group_123456
 ```
 
