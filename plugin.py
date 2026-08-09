@@ -7,11 +7,10 @@ plugin = NekroPlugin(
     name="Angel Memory",
     module_name="nekro_plugin_angel_memory",
     description="Native long-term memory, recall, user profiles, soul state and consolidation for NekroAgent",
-    version="1.0.0",
-    author="kawayiYokami_NekroPort",
-    url="https://github.com/kawayiYokami/astrbot_plugin_angel_memory",
-    allow_sleep=True,
-    sleep_brief="Provides long-term memory, recall, notes, profiles and background consolidation.",
+    version="1.0.1",
+    author="luoxiQAQ",
+    url="https://github.com/luoxiQAQ/ekro-plugin-angel-memory",
+    allow_sleep=False,
 )
 
 

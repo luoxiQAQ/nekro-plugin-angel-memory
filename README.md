@@ -44,7 +44,7 @@ management page. The plugin has no additional Python package dependencies.
 Runtime data is stored under the native NekroAgent plugin key:
 
 ```text
-NEKRO_DATA_DIR/plugin_data/kawayiYokami_NekroPort.nekro_plugin_angel_memory/
+NEKRO_DATA_DIR/plugin_data/luoxiQAQ.nekro_plugin_angel_memory/
 ```
 
 The SQLite database is `angel_memory.sqlite3` inside that directory.
@@ -70,10 +70,10 @@ the prompt becomes repetitive.
 NekroAgent mounts the authenticated plugin router at:
 
 ```text
-/plugins/kawayiYokami_NekroPort.nekro_plugin_angel_memory
+/plugins/luoxiQAQ.nekro_plugin_angel_memory
 ```
 
-Endpoints require a NekroAgent super-user session:
+Endpoints require a NekroAgent administrator session:
 
 - `GET /status`
 - `GET /memories?chat_key=...`
@@ -94,7 +94,7 @@ SQLite database, then run it from the NekroAgent repository root:
 ```bash
 python -m plugins.nekro_plugin_angel_memory.migrate_astrbot \
   /path/to/angel-memory-backup.json \
-  /path/to/nekro-data/plugin_data/kawayiYokami_NekroPort.nekro_plugin_angel_memory/angel_memory.sqlite3 \
+  /path/to/nekro-data/plugin_data/luoxiQAQ.nekro_plugin_angel_memory/angel_memory.sqlite3 \
   --chat-key onebot_v11-group_123456
 ```
 
