@@ -9,7 +9,7 @@ plugin = NekroPlugin(
     description="原生长期记忆、回忆、用户画像、灵魂状态与记忆整合插件",
     version="1.0.3",
     author="luoxiQAQ",
-    url="https://github.com/luoxiQAQ/ekro-plugin-angel-memory",
+    url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
     allow_sleep=False,
 )
 
