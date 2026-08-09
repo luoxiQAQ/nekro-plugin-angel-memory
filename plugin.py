@@ -5,9 +5,9 @@ from nekro_agent.api.plugin import ConfigBase, ExtraField, NekroPlugin
 
 plugin = NekroPlugin(
     name="天使记忆",
-    module_name="nekro_angel_memory",
+    module_name="nekro_memory_angel",
     description="原生长期记忆、回忆、用户画像、灵魂状态与记忆整合插件",
-    version="1.0.3",
+    version="1.0.4",
     author="luoxiQAQ",
     url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
     allow_sleep=False,
