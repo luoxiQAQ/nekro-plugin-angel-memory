@@ -1,0 +1,634 @@
+from __future__ import annotations
+
+import json
+import math
+import re
+import sqlite3
+import time
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterable, Iterator, Sequence
+
+from .models import MemoryRecord, NoteRecord, SoulState
+
+ASCII_PATTERN = re.compile(r'[a-zA-Z0-9_-]{2,}')
+CJK_PATTERN = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff]+')
+
+def clamp(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def normalize_tags(tags: Iterable[str] | str | None) -> list[str]:
+    if isinstance(tags, str):
+        tags = re.split(r"[,;\uFF0C\uFF1B]", tags)
+    values: list[str] = []
+    for tag in tags or []:
+        value = str(tag).strip().lower()
+        if value and value not in values:
+            values.append(value)
+    return values[:32]
+
+
+def search_tokens(text: str) -> list[str]:
+    text = " ".join(str(text or "").lower().split())
+    tokens = ASCII_PATTERN.findall(text)
+    for fragment in CJK_PATTERN.findall(text):
+        chars = list(fragment)
+        tokens.extend(chars)
+        tokens.extend("".join(chars[index : index + 2]) for index in range(len(chars) - 1))
+    return list(dict.fromkeys(token for token in tokens if token))[:160]
+
+
+def search_text(*parts: str) -> str:
+    return " ".join(search_tokens("\n".join(parts)))
+
+
+def match_query(query: str) -> str:
+    tokens = [token.replace(chr(34), "") for token in search_tokens(query)[:32]]
+    return " OR ".join(chr(34) + token + chr(34) for token in tokens)
+
+
+class AngelMemoryStorage:
+    def __init__(self, database_path: Path):
+        self.database_path = database_path
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.database_path, timeout=30.0)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=NORMAL")
+        connection.execute("PRAGMA busy_timeout=30000")
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def initialize(self) -> None:
+        with self.connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS memories (
+                    id TEXT PRIMARY KEY, short_id INTEGER NOT NULL UNIQUE,
+                    chat_key TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '',
+                    memory_type TEXT NOT NULL DEFAULT 'episodic', content TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',
+                    importance REAL NOT NULL DEFAULT 0.5, confidence REAL NOT NULL DEFAULT 0.8,
+                    access_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active',
+                    source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL, last_accessed_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_memories_scope
+                    ON memories(chat_key, user_id, status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS notes (
+                    id TEXT PRIMARY KEY, short_id INTEGER NOT NULL UNIQUE,
+                    chat_key TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
+                    tags_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT 'agent',
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_notes_scope ON notes(chat_key, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    chat_key TEXT NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '', attributes_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at REAL NOT NULL, PRIMARY KEY(chat_key, user_id)
+                );
+                CREATE TABLE IF NOT EXISTS soul_states (
+                    chat_key TEXT PRIMARY KEY, recall_depth REAL NOT NULL DEFAULT 0.5,
+                    impression_depth REAL NOT NULL DEFAULT 0.5, expression_desire REAL NOT NULL DEFAULT 0.5,
+                    creativity REAL NOT NULL DEFAULT 0.5, updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS state (
+                    state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL, updated_at REAL NOT NULL
+                );
+                """
+            )
+            try:
+                connection.executescript(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+                        memory_id UNINDEXED, chat_key UNINDEXED, search_text, tokenize='unicode61');
+                    CREATE VIRTUAL TABLE IF NOT EXISTS note_fts USING fts5(
+                        note_id UNINDEXED, chat_key UNINDEXED, search_text, tokenize='unicode61');
+                    """
+                )
+            except sqlite3.OperationalError:
+                self._set_state(connection, "fts_available", "0")
+            else:
+                self._set_state(connection, "fts_available", "1")
+
+    @staticmethod
+    def _set_state(connection: sqlite3.Connection, key: str, value: str) -> None:
+        connection.execute(
+            "INSERT INTO state(state_key,state_value,updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=excluded.updated_at",
+            (key, value, time.time()),
+        )
+
+    @staticmethod
+    def _fts_enabled(connection: sqlite3.Connection) -> bool:
+        row = connection.execute("SELECT state_value FROM state WHERE state_key='fts_available'").fetchone()
+        return row is None or row["state_value"] == "1"
+
+    @staticmethod
+    def _next_short_id(connection: sqlite3.Connection, table: str) -> int:
+        row = connection.execute(f"SELECT COALESCE(MAX(short_id),0)+1 AS next_id FROM {table}").fetchone()
+        return int(row["next_id"])
+
+    @staticmethod
+    def _resolve_row(connection: sqlite3.Connection, table: str, identifier: str | int) -> sqlite3.Row | None:
+        value = str(identifier).strip()
+        if value.isdigit():
+            return connection.execute(f"SELECT * FROM {table} WHERE short_id=?", (int(value),)).fetchone()
+        return connection.execute(f"SELECT * FROM {table} WHERE id=?", (value,)).fetchone()
+
+    def add_memory(
+        self,
+        *,
+        chat_key: str,
+        content: str,
+        summary: str = "",
+        tags: Iterable[str] | None = None,
+        importance: float = 0.5,
+        confidence: float = 0.8,
+        memory_type: str = "episodic",
+        user_id: str = "",
+        source: str = "manual",
+        created_at: float | None = None,
+    ) -> MemoryRecord:
+        content = str(content).strip()
+        if not content:
+            raise ValueError("Memory content cannot be empty")
+        timestamp = float(created_at or time.time())
+        tag_list = normalize_tags(tags)
+        memory_id = uuid.uuid4().hex
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            short_id = self._next_short_id(connection, "memories")
+            connection.execute(
+                """
+                INSERT INTO memories(
+                    id,short_id,chat_key,user_id,memory_type,content,summary,tags_json,
+                    importance,confidence,source,created_at,updated_at,last_accessed_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    memory_id, short_id, chat_key, user_id, memory_type, content, str(summary).strip(),
+                    json.dumps(tag_list, ensure_ascii=False), clamp(importance), clamp(confidence), source,
+                    timestamp, timestamp, timestamp,
+                ),
+            )
+            if self._fts_enabled(connection):
+                connection.execute(
+                    "INSERT INTO memory_fts(memory_id,chat_key,search_text) VALUES(?,?,?)",
+                    (memory_id, chat_key, search_text(content, summary, " ".join(tag_list))),
+                )
+            row = connection.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+        return self.memory_from_row(row)
+
+    def update_memory(self, identifier: str | int, **changes: Any) -> MemoryRecord | None:
+        if changes.get("content") is not None and not str(changes["content"]).strip():
+            raise ValueError("Memory content cannot be empty")
+        with self.connect() as connection:
+            row = self._resolve_row(connection, "memories", identifier)
+            if row is None:
+                return None
+            values = dict(row)
+            for key in ("content", "summary", "status"):
+                if changes.get(key) is not None:
+                    values[key] = str(changes[key]).strip()
+            if values["status"] not in {"active", "archived"}:
+                raise ValueError("Memory status must be active or archived")
+            tags = normalize_tags(changes["tags"]) if changes.get("tags") is not None else json.loads(values["tags_json"])
+            if changes.get("importance") is not None:
+                values["importance"] = clamp(changes["importance"])
+            if changes.get("confidence") is not None:
+                values["confidence"] = clamp(changes["confidence"])
+            values["updated_at"] = time.time()
+            connection.execute(
+                """
+                UPDATE memories SET content=?,summary=?,tags_json=?,importance=?,confidence=?,status=?,updated_at=?
+                WHERE id=?
+                """,
+                (
+                    values["content"], values["summary"], json.dumps(tags, ensure_ascii=False),
+                    values["importance"], values["confidence"], values["status"], values["updated_at"], values["id"],
+                ),
+            )
+            if self._fts_enabled(connection):
+                connection.execute("DELETE FROM memory_fts WHERE memory_id=?", (values["id"],))
+                connection.execute(
+                    "INSERT INTO memory_fts(memory_id,chat_key,search_text) VALUES(?,?,?)",
+                    (values["id"], values["chat_key"], search_text(values["content"], values["summary"], " ".join(tags))),
+                )
+            updated = connection.execute("SELECT * FROM memories WHERE id=?", (values["id"],)).fetchone()
+        return self.memory_from_row(updated)
+
+    def get_memory(self, identifier: str | int) -> MemoryRecord | None:
+        with self.connect() as connection:
+            row = self._resolve_row(connection, "memories", identifier)
+        return self.memory_from_row(row) if row else None
+
+    def delete_memory(self, identifier: str | int) -> bool:
+        with self.connect() as connection:
+            row = self._resolve_row(connection, "memories", identifier)
+            if row is None:
+                return False
+            connection.execute("DELETE FROM memories WHERE id=?", (row["id"],))
+            if self._fts_enabled(connection):
+                connection.execute("DELETE FROM memory_fts WHERE memory_id=?", (row["id"],))
+        return True
+
+    def search_memories(
+        self,
+        *,
+        chat_key: str,
+        query: str,
+        user_id: str = "",
+        limit: int = 6,
+        include_shared: bool = True,
+    ) -> list[MemoryRecord]:
+        limit = max(1, min(int(limit), 50))
+        query_match = match_query(query)
+        with self.connect() as connection:
+            rows: Sequence[sqlite3.Row] = []
+            if query_match and self._fts_enabled(connection):
+                scope = "(m.user_id='' OR m.user_id=?)" if user_id and include_shared else "m.user_id=?"
+                try:
+                    rows = connection.execute(
+                        f"""
+                        SELECT m.* FROM memory_fts JOIN memories m ON m.id=memory_fts.memory_id
+                        WHERE memory_fts MATCH ? AND m.chat_key=? AND m.status='active' AND {scope}
+                        ORDER BY bm25(memory_fts) ASC,m.importance DESC LIMIT ?
+                        """,
+                        (query_match, chat_key, user_id, limit * 3),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    rows = []
+            if not rows:
+                rows = self._fallback_search(connection, chat_key, query, user_id, limit * 3, include_shared)
+            now = time.time()
+            query_set = set(search_tokens(query))
+            scored: list[tuple[float, sqlite3.Row]] = []
+            for row in rows:
+                candidate = set(search_tokens(f"{row['content']} {row['summary']} {row['tags_json']}"))
+                overlap = len(query_set & candidate) / max(1, len(query_set))
+                age_days = max(0.0, (now - float(row["updated_at"])) / 86400.0)
+                score = (
+                    overlap * 0.58
+                    + float(row["importance"]) * 0.28
+                    + math.exp(-age_days / 120.0) * 0.08
+                    + float(row["confidence"]) * 0.06
+                )
+                scored.append((score, row))
+            scored.sort(key=lambda item: item[0], reverse=True)
+            selected = [row for _, row in scored[:limit]]
+            for row in selected:
+                connection.execute(
+                    "UPDATE memories SET access_count=access_count+1,last_accessed_at=? WHERE id=?",
+                    (now, row["id"]),
+                )
+        return [self.memory_from_row(row) for row in selected]
+
+    def list_memories(self, *, chat_key: str, status: str = "active", limit: int = 100, offset: int = 0) -> list[MemoryRecord]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM memories WHERE chat_key=? AND status=?
+                ORDER BY importance DESC,updated_at DESC LIMIT ? OFFSET ?
+                """,
+                (chat_key, status, max(1, min(limit, 500)), max(0, offset)),
+            ).fetchall()
+        return [self.memory_from_row(row) for row in rows]
+
+    def find_similar_memory(self, *, chat_key: str, content: str, user_id: str = "") -> MemoryRecord | None:
+        source = set(search_tokens(content))
+        for memory in self.search_memories(
+            chat_key=chat_key,
+            query=content,
+            user_id=user_id,
+            limit=3,
+            include_shared=False,
+        ):
+            candidate = set(search_tokens(memory.content))
+            if len(source & candidate) / max(1, len(source | candidate)) >= 0.72:
+                return memory
+        return None
+
+    @staticmethod
+    def _fallback_search(
+        connection: sqlite3.Connection,
+        chat_key: str,
+        query: str,
+        user_id: str,
+        limit: int,
+        include_shared: bool,
+    ) -> Sequence[sqlite3.Row]:
+        tokens = search_tokens(query)[:12]
+        if not tokens:
+            return []
+        scope = "(user_id='' OR user_id=?)" if user_id and include_shared else "user_id=?"
+        clauses = " OR ".join("(content LIKE ? OR summary LIKE ? OR tags_json LIKE ?)" for _ in tokens)
+        params: list[Any] = [chat_key, user_id]
+        for token in tokens:
+            value = f"%{token}%"
+            params.extend([value, value, value])
+        params.append(limit)
+        return connection.execute(
+            f"SELECT * FROM memories WHERE chat_key=? AND status='active' AND {scope} AND ({clauses}) LIMIT ?",
+            params,
+        ).fetchall()
+
+    def add_note(
+        self,
+        *,
+        chat_key: str,
+        title: str,
+        content: str,
+        tags: Iterable[str] | None = None,
+        source: str = "agent",
+    ) -> NoteRecord:
+        title = str(title).strip()
+        content = str(content).strip()
+        if not title or not content:
+            raise ValueError("Note title and content cannot be empty")
+        timestamp = time.time()
+        note_id = uuid.uuid4().hex
+        tag_list = normalize_tags(tags)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            short_id = self._next_short_id(connection, "notes")
+            connection.execute(
+                "INSERT INTO notes(id,short_id,chat_key,title,content,tags_json,source,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    note_id, short_id, chat_key, title, content,
+                    json.dumps(tag_list, ensure_ascii=False), source, timestamp, timestamp,
+                ),
+            )
+            if self._fts_enabled(connection):
+                connection.execute(
+                    "INSERT INTO note_fts(note_id,chat_key,search_text) VALUES(?,?,?)",
+                    (note_id, chat_key, search_text(title, content, " ".join(tag_list))),
+                )
+            row = connection.execute("SELECT * FROM notes WHERE id=?", (note_id,)).fetchone()
+        return self.note_from_row(row)
+
+    def get_note(self, identifier: str | int) -> NoteRecord | None:
+        with self.connect() as connection:
+            row = self._resolve_row(connection, "notes", identifier)
+        return self.note_from_row(row) if row else None
+
+    def search_notes(self, *, chat_key: str, query: str, limit: int = 5) -> list[NoteRecord]:
+        limit = max(1, min(limit, 30))
+        query_match = match_query(query)
+        with self.connect() as connection:
+            rows: Sequence[sqlite3.Row] = []
+            if query_match and self._fts_enabled(connection):
+                try:
+                    rows = connection.execute(
+                        """
+                        SELECT n.* FROM note_fts JOIN notes n ON n.id=note_fts.note_id
+                        WHERE note_fts MATCH ? AND n.chat_key=?
+                        ORDER BY bm25(note_fts) ASC,n.updated_at DESC LIMIT ?
+                        """,
+                        (query_match, chat_key, limit),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    rows = []
+            if not rows:
+                like = f"%{query.strip()}%"
+                rows = connection.execute(
+                    """
+                    SELECT * FROM notes WHERE chat_key=? AND (title LIKE ? OR content LIKE ? OR tags_json LIKE ?)
+                    ORDER BY updated_at DESC LIMIT ?
+                    """,
+                    (chat_key, like, like, like, limit),
+                ).fetchall()
+        return [self.note_from_row(row) for row in rows]
+
+    def list_notes(self, *, chat_key: str, limit: int = 100, offset: int = 0) -> list[NoteRecord]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM notes WHERE chat_key=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (chat_key, max(1, min(limit, 500)), max(0, offset)),
+            ).fetchall()
+        return [self.note_from_row(row) for row in rows]
+
+    def delete_note(self, identifier: str | int) -> bool:
+        with self.connect() as connection:
+            row = self._resolve_row(connection, "notes", identifier)
+            if row is None:
+                return False
+            connection.execute("DELETE FROM notes WHERE id=?", (row["id"],))
+            if self._fts_enabled(connection):
+                connection.execute("DELETE FROM note_fts WHERE note_id=?", (row["id"],))
+        return True
+
+    @staticmethod
+    def note_from_row(row: sqlite3.Row) -> NoteRecord:
+        return NoteRecord(
+            id=row["id"], short_id=int(row["short_id"]), chat_key=row["chat_key"], title=row["title"],
+            content=row["content"], tags=json.loads(row["tags_json"] or "[]"), source=row["source"],
+            created_at=float(row["created_at"]), updated_at=float(row["updated_at"]),
+        )
+
+    def get_profile(self, *, chat_key: str, user_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM user_profiles WHERE chat_key=? AND user_id=?",
+                (chat_key, user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "chat_key": row["chat_key"],
+            "user_id": row["user_id"],
+            "display_name": row["display_name"],
+            "summary": row["summary"],
+            "attributes": json.loads(row["attributes_json"] or "{}"),
+            "updated_at": float(row["updated_at"]),
+        }
+
+    def upsert_profile(
+        self,
+        *,
+        chat_key: str,
+        user_id: str,
+        display_name: str = "",
+        summary: str = "",
+        attributes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_profiles(chat_key,user_id,display_name,summary,attributes_json,updated_at)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(chat_key,user_id) DO UPDATE SET
+                    display_name=excluded.display_name,summary=excluded.summary,
+                    attributes_json=excluded.attributes_json,updated_at=excluded.updated_at
+                """,
+                (
+                    chat_key, user_id, display_name, summary,
+                    json.dumps(attributes or {}, ensure_ascii=False), time.time(),
+                ),
+            )
+        return self.get_profile(chat_key=chat_key, user_id=user_id) or {}
+
+    def get_soul_state(self, chat_key: str) -> SoulState:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM soul_states WHERE chat_key=?", (chat_key,)).fetchone()
+            if row is None:
+                timestamp = time.time()
+                connection.execute(
+                    "INSERT INTO soul_states(chat_key,recall_depth,impression_depth,expression_desire,creativity,updated_at) "
+                    "VALUES(?,0.5,0.5,0.5,0.5,?)",
+                    (chat_key, timestamp),
+                )
+                return SoulState(chat_key=chat_key, updated_at=timestamp)
+        return SoulState(
+            chat_key=row["chat_key"], recall_depth=float(row["recall_depth"]),
+            impression_depth=float(row["impression_depth"]), expression_desire=float(row["expression_desire"]),
+            creativity=float(row["creativity"]), updated_at=float(row["updated_at"]),
+        )
+
+    def update_soul_state(self, chat_key: str, **deltas: float) -> SoulState:
+        state = self.get_soul_state(chat_key)
+        decay = math.exp(-max(0.0, (time.time() - state.updated_at) / 3600.0) / 72.0)
+        for field_name in ("recall_depth", "impression_depth", "expression_desire", "creativity"):
+            current = 0.5 + (getattr(state, field_name) - 0.5) * decay
+            setattr(state, field_name, clamp(current + float(deltas.get(field_name, 0.0))))
+        state.updated_at = time.time()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO soul_states(chat_key,recall_depth,impression_depth,expression_desire,creativity,updated_at)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(chat_key) DO UPDATE SET
+                    recall_depth=excluded.recall_depth,impression_depth=excluded.impression_depth,
+                    expression_desire=excluded.expression_desire,creativity=excluded.creativity,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    chat_key, state.recall_depth, state.impression_depth,
+                    state.expression_desire, state.creativity, state.updated_at,
+                ),
+            )
+        return state
+
+    def get_state(self, key: str, default: str = "") -> str:
+        with self.connect() as connection:
+            row = connection.execute("SELECT state_value FROM state WHERE state_key=?", (key,)).fetchone()
+        return str(row["state_value"]) if row else default
+
+    def set_state(self, key: str, value: str) -> None:
+        with self.connect() as connection:
+            self._set_state(connection, key, str(value))
+
+    def maintenance(self, *, archive_after_days: int, archive_threshold: float, max_memories_per_scope: int) -> dict[str, int]:
+        now = time.time()
+        archived = 0
+        pruned = 0
+        cutoff = now - max(1, archive_after_days) * 86400
+        with self.connect() as connection:
+            candidates = connection.execute(
+                "SELECT id,importance,confidence,access_count,updated_at FROM memories "
+                "WHERE status='active' AND updated_at<?",
+                (cutoff,),
+            ).fetchall()
+            for row in candidates:
+                age_days = max(1.0, (now - float(row["updated_at"])) / 86400.0)
+                strength = (
+                    float(row["importance"]) * 0.55
+                    + float(row["confidence"]) * 0.20
+                    + min(1.0, math.log1p(int(row["access_count"])) / 4.0) * 0.15
+                    + math.exp(-age_days / 365.0) * 0.10
+                )
+                if strength < archive_threshold:
+                    connection.execute("UPDATE memories SET status='archived',updated_at=? WHERE id=?", (now, row["id"]))
+                    archived += 1
+            scopes = connection.execute(
+                "SELECT DISTINCT chat_key,user_id FROM memories WHERE status='active'"
+            ).fetchall()
+            for scope in scopes:
+                overflow = connection.execute(
+                    """
+                    SELECT id FROM memories WHERE chat_key=? AND user_id=? AND status='active'
+                    ORDER BY importance DESC,access_count DESC,updated_at DESC LIMIT -1 OFFSET ?
+                    """,
+                    (scope["chat_key"], scope["user_id"], max(20, max_memories_per_scope)),
+                ).fetchall()
+                for row in overflow:
+                    connection.execute("UPDATE memories SET status='archived',updated_at=? WHERE id=?", (now, row["id"]))
+                    pruned += 1
+        return {"archived": archived, "pruned": pruned}
+
+    def export_all(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            memories = [dict(row) for row in connection.execute("SELECT * FROM memories ORDER BY created_at")]
+            notes = [dict(row) for row in connection.execute("SELECT * FROM notes ORDER BY created_at")]
+            profiles = [dict(row) for row in connection.execute("SELECT * FROM user_profiles ORDER BY updated_at")]
+            soul_states = [dict(row) for row in connection.execute("SELECT * FROM soul_states ORDER BY updated_at")]
+        for row in memories:
+            row["tags"] = json.loads(row.pop("tags_json") or "[]")
+        for row in notes:
+            row["tags"] = json.loads(row.pop("tags_json") or "[]")
+        for row in profiles:
+            row["attributes"] = json.loads(row.pop("attributes_json") or "{}")
+        return {
+            "version": 1,
+            "memories": memories,
+            "notes": notes,
+            "profiles": profiles,
+            "soul_states": soul_states,
+        }
+
+    def import_memories(self, memories: Iterable[dict[str, Any]], *, default_chat_key: str = "") -> dict[str, int]:
+        imported = 0
+        skipped = 0
+        for item in memories:
+            content = str(item.get("content") or item.get("judgment") or item.get("memory") or "").strip()
+            chat_key = str(item.get("chat_key") or item.get("scope") or default_chat_key).strip()
+            if not content or not chat_key:
+                skipped += 1
+                continue
+            tags = item.get("tags") or []
+            if isinstance(tags, str):
+                tags = [tag.strip() for tag in re.split(r"[,;\uFF0C\uFF1B]", tags) if tag.strip()]
+            memory_scope = str(item.get("memory_scope") or "").strip()
+            if memory_scope and memory_scope != "public":
+                tags = [*tags, f"astrbot-scope:{memory_scope}"]
+            raw_importance = item.get("importance", item.get("weight", item.get("strength", 0.5)))
+            importance = 0.5 if raw_importance in (None, "") else float(raw_importance)
+            if importance > 1.0:
+                importance /= 100.0
+            self.add_memory(
+                chat_key=chat_key,
+                user_id=str(item.get("user_id") or ""),
+                content=content,
+                summary=str(item.get("summary") or item.get("reasoning") or ""),
+                tags=tags,
+                importance=importance,
+                confidence=float(item.get("confidence", 0.8) or 0.8),
+                memory_type=str(item.get("memory_type") or item.get("type") or "episodic"),
+                source="astrbot_import",
+                created_at=float(item.get("created_at") or item.get("timestamp") or time.time()),
+            )
+            imported += 1
+        return {"imported": imported, "skipped": skipped}
+
+    @staticmethod
+    def memory_from_row(row: sqlite3.Row) -> MemoryRecord:
+        return MemoryRecord(
+            id=row["id"], short_id=int(row["short_id"]), chat_key=row["chat_key"], user_id=row["user_id"],
+            memory_type=row["memory_type"], content=row["content"], summary=row["summary"],
+            tags=json.loads(row["tags_json"] or "[]"), importance=float(row["importance"]),
+            confidence=float(row["confidence"]), access_count=int(row["access_count"]), status=row["status"],
+            source=row["source"], created_at=float(row["created_at"]), updated_at=float(row["updated_at"]),
+            last_accessed_at=float(row["last_accessed_at"]),
+        )

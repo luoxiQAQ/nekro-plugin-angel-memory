@@ -1,0 +1,10 @@
+Angel Memory for NekroAgent
+
+This project is a native NekroAgent adaptation of astrbot_plugin_angel_memory:
+https://github.com/kawayiYokami/astrbot_plugin_angel_memory
+
+Original project copyright belongs to kawayiYokami and contributors.
+Port-specific changes were produced for NekroAgent compatibility.
+
+The complete source is distributed under the GNU General Public License,
+version 3 or any later version. See LICENSE.
