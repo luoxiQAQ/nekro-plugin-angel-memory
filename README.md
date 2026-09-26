@@ -54,7 +54,6 @@ SQLite 数据库为该目录下的 `angel_memory.sqlite3`。
 - `ENABLE_HEURISTIC_REMEMBER`：记住中文"记住这个"等明确要求。
 - `ENABLE_USER_PROFILE`：维护每频道用户画像。
 - `ENABLE_SOUL_STATE`：启用回忆和表达倾向状态。
-- `CLEAR_MEMORY_ON_CHANNEL_RESET`：开启后，在面板重置频道会同时清除该频道的全部记忆、笔记、画像与灵魂状态（默认关闭，长期记忆跨频道重置保留）。
 
 如果同时启用了 NekroAgent 内置记忆系统，两个系统可能会注入重叠的上下文。
 建议禁用其中一个或减少回忆数量限制以避免提示词重复。
@@ -84,15 +83,23 @@ NekroAgent 将认证插件路由挂载在：
 ## 数据重置说明
 
 NekroAgent 插件管理页的「重置数据」按钮只会删除插件存储（`plugin_data` 表）中的键值数据，
-**不会删除插件数据目录中的文件**。本插件的所有记忆都保存在独立的 SQLite 数据库
-`angel_memory.sqlite3` 中，因此点击该按钮无法清除记忆，这是框架行为，并非本插件数据残留。
+不会删除插件数据目录中的文件。本插件的所有记忆都保存在独立的 SQLite 数据库
+`angel_memory.sqlite3` 中，为了响应该按钮，插件会在插件存储中保存一个哨兵标记：
 
-如需真正清除记忆，请使用以下任一方式：
+- 点击面板「重置数据」后，框架清空插件存储，哨兵标记随之消失；
+- 插件在下一条消息或下一次对话开始时检测到标记丢失，会立即清空本插件全部数据
+  （记忆、笔记、用户画像、灵魂状态及检索索引），并自动重建标记。
 
-- 调用管理 API：`POST /plugins/luoxiQAQ.nekro_memory_angel/reset` 清空全部数据，
-  或 `POST /plugins/luoxiQAQ.nekro_memory_angel/reset?chat_key=<频道ID>` 只清除单个频道。
-- 在插件配置中开启 `CLEAR_MEMORY_ON_CHANNEL_RESET` 后，于面板「重置频道」即可同步清除该频道的记忆。
-- 彻底重置可停止 NekroAgent 后删除 `NEKRO_DATA_DIR/plugin_data/luoxiQAQ.nekro_memory_angel/` 目录。
+因此在面板点击「重置数据」即可彻底清除记忆，最迟在下一次对话时生效。
+首次从旧版本升级后，插件会先建立基线标记，此时请再点击一次「重置数据」使其生效。
+
+也可以通过管理 API 直接清除（无需等待）：
+
+- `POST /plugins/luoxiQAQ.nekro_memory_angel/reset` 清空全部数据；
+- `POST /plugins/luoxiQAQ.nekro_memory_angel/reset?chat_key=<频道ID>` 只清除单个频道。
+
+操作不可恢复，执行前建议先 `GET /export` 备份。彻底重置还可停止 NekroAgent 后删除
+`NEKRO_DATA_DIR/plugin_data/luoxiQAQ.nekro_memory_angel/` 目录。
 
 ## AstrBot 迁移
 

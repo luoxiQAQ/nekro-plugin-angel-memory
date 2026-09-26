@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
 from nekro_agent.core.logger import get_sub_logger
@@ -16,11 +17,45 @@ from .plugin import config, plugin
 logger = get_sub_logger("angel_memory")
 background_tasks: set[asyncio.Task[Any]] = set()
 message_counts: dict[str, int] = {}
+RESET_SENTINEL_KEY = "_angel_memory_data_marker"
+RESET_SENTINEL_VALUE = "v1"
+_last_reset_check: float = 0.0
 EXPLICIT_MEMORY_PATTERNS = (
     re.compile(r"^(?:\u8bf7|\u4f60\u8981)?\u8bb0\u4f4f[\uff1a:\uff0c,\s]*(.+)$"),
     re.compile(r"^(?:\u8bf7|\u4f60\u8981)?\u8bb0\u5f97[\uff1a:\uff0c,\s]*(.+)$"),
     re.compile(r"^\u4ee5\u540e(?:\u8bf7)?[\uff1a:\uff0c,\s]*(.+)$"),
 )
+
+
+async def ensure_reset_sentinel() -> None:
+    await plugin.store.set(store_key=RESET_SENTINEL_KEY, value=RESET_SENTINEL_VALUE)
+
+
+async def check_plugin_data_reset() -> None:
+    """检测面板「重置数据」按钮。
+
+    框架的重置端点只会清空插件存储（DBPluginData），不会删除插件数据目录中的
+    SQLite 文件，且不提供任何插件回调。插件在插件存储中保存一个哨兵标记，
+    发现标记消失即说明用户执行了重置，此时同步清空本插件的全部记忆数据。
+    """
+    global _last_reset_check
+    now = time.monotonic()
+    if now - _last_reset_check < 5.0:
+        return
+    _last_reset_check = now
+    try:
+        marker = await plugin.store.get(store_key=RESET_SENTINEL_KEY)
+    except Exception:
+        logger.exception("Angel Memory reset sentinel check failed")
+        return
+    if marker is not None:
+        return
+    logger.info("Angel Memory plugin store was reset by panel, clearing all memory data")
+    await asyncio.to_thread(storage.reset_all)
+    try:
+        await ensure_reset_sentinel()
+    except Exception:
+        logger.exception("Angel Memory failed to restore reset sentinel")
 
 
 def track_task(task: asyncio.Task[Any]) -> None:
@@ -54,6 +89,10 @@ async def delayed_consolidation(chat_key: str) -> None:
 @plugin.mount_init_method()
 async def initialize() -> None:
     await asyncio.to_thread(storage.initialize)
+    try:
+        await ensure_reset_sentinel()
+    except Exception:
+        logger.exception("Angel Memory failed to write reset sentinel")
     track_task(asyncio.create_task(engine.run_maintenance_if_due()))
     logger.info(f"Angel Memory initialized: {storage.database_path}")
 
@@ -69,20 +108,12 @@ async def cleanup() -> None:
     message_counts.clear()
 
 
-@plugin.mount_on_channel_reset()
-async def on_channel_reset(ctx: AgentCtx) -> None:
-    if not config.CLEAR_MEMORY_ON_CHANNEL_RESET:
-        return
-    try:
-        result = await asyncio.to_thread(storage.reset_channel, ctx.chat_key)
-        if any(result.values()):
-            logger.info(f"Angel Memory channel data cleared on reset: {ctx.chat_key} | {result}")
-    except Exception:
-        logger.exception(f"Angel Memory channel data reset failed: {ctx.chat_key}")
-
-
 @plugin.mount_prompt_inject_method("angel_memory_prompt")
 async def inject_memory_prompt(_ctx: AgentCtx) -> str:
+    try:
+        await check_plugin_data_reset()
+    except Exception:
+        logger.exception("Angel Memory reset check failed during prompt injection")
     try:
         return await engine.render_prompt(_ctx)
     except Exception:
@@ -92,6 +123,7 @@ async def inject_memory_prompt(_ctx: AgentCtx) -> str:
 
 @plugin.mount_on_user_message()
 async def on_user_message(_ctx: AgentCtx, message: ChatMessage):
+    await check_plugin_data_reset()
     chat_key = message.chat_key
     user_id = str(message.platform_userid or message.sender_id or "")
     content = message.content_text.strip()
