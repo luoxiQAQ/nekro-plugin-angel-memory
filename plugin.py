@@ -7,7 +7,7 @@ plugin = NekroPlugin(
     name="天使记忆",
     module_name="nekro_memory_angel",
     description="原生长期记忆、回忆、用户画像、灵魂状态与记忆整合插件",
-    version="1.0.4",
+    version="1.0.5",
     author="luoxiQAQ",
     url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
     allow_sleep=False,
@@ -37,6 +37,11 @@ class AngelMemoryConfig(ConfigBase):
     ARCHIVE_STRENGTH_THRESHOLD: float = Field(default=0.28, ge=0.0, le=1.0, title="归档强度阈值")
     ENABLE_USER_PROFILE: bool = Field(default=True, title="启用用户画像")
     ENABLE_SOUL_STATE: bool = Field(default=True, title="启用灵魂状态")
+    CLEAR_MEMORY_ON_CHANNEL_RESET: bool = Field(
+        default=False,
+        title="重置频道时清除记忆",
+        description="开启后，在面板重置频道会同时清除该频道的全部记忆、笔记、画像与灵魂状态；长期记忆默认跨频道重置保留。",
+    )
 
 
 config: AngelMemoryConfig = plugin.get_config(AngelMemoryConfig)
