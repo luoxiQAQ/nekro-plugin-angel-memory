@@ -69,6 +69,18 @@ async def cleanup() -> None:
     message_counts.clear()
 
 
+@plugin.mount_on_channel_reset()
+async def on_channel_reset(ctx: AgentCtx) -> None:
+    if not config.CLEAR_MEMORY_ON_CHANNEL_RESET:
+        return
+    try:
+        result = await asyncio.to_thread(storage.reset_channel, ctx.chat_key)
+        if any(result.values()):
+            logger.info(f"Angel Memory channel data cleared on reset: {ctx.chat_key} | {result}")
+    except Exception:
+        logger.exception(f"Angel Memory channel data reset failed: {ctx.chat_key}")
+
+
 @plugin.mount_prompt_inject_method("angel_memory_prompt")
 async def inject_memory_prompt(_ctx: AgentCtx) -> str:
     try:

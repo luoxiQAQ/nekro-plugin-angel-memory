@@ -118,6 +118,16 @@ def create_router() -> APIRouter:
         )
         return result
 
+    @router.post("/reset")
+    @require_role(Role.Admin)
+    async def reset_data(
+        chat_key: str = "",
+        _current_user=Depends(get_current_active_user),
+    ) -> dict[str, Any]:
+        if chat_key.strip():
+            return await asyncio.to_thread(storage.reset_channel, chat_key.strip())
+        return await asyncio.to_thread(storage.reset_all)
+
     @router.get("/export")
     @require_role(Role.Admin)
     async def export_data(_current_user=Depends(get_current_active_user)) -> dict[str, Any]:
