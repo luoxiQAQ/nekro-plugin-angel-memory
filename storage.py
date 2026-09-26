@@ -430,6 +430,42 @@ class AngelMemoryStorage:
                 connection.execute("DELETE FROM note_fts WHERE note_id=?", (row["id"],))
         return True
 
+    def reset_channel(self, chat_key: str) -> dict[str, int]:
+        chat_key = str(chat_key).strip()
+        if not chat_key:
+            raise ValueError("chat_key cannot be empty")
+        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0}
+        with self.connect() as connection:
+            if self._fts_enabled(connection):
+                connection.execute(
+                    "DELETE FROM memory_fts WHERE memory_id IN (SELECT id FROM memories WHERE chat_key=?)",
+                    (chat_key,),
+                )
+                connection.execute(
+                    "DELETE FROM note_fts WHERE note_id IN (SELECT id FROM notes WHERE chat_key=?)",
+                    (chat_key,),
+                )
+            counts["memories"] = connection.execute("DELETE FROM memories WHERE chat_key=?", (chat_key,)).rowcount
+            counts["notes"] = connection.execute("DELETE FROM notes WHERE chat_key=?", (chat_key,)).rowcount
+            counts["profiles"] = connection.execute("DELETE FROM user_profiles WHERE chat_key=?", (chat_key,)).rowcount
+            counts["soul_states"] = connection.execute("DELETE FROM soul_states WHERE chat_key=?", (chat_key,)).rowcount
+        return counts
+
+    def reset_all(self) -> dict[str, int]:
+        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0}
+        with self.connect() as connection:
+            fts_available = self._fts_enabled(connection)
+            if fts_available:
+                connection.execute("DELETE FROM memory_fts")
+                connection.execute("DELETE FROM note_fts")
+            counts["memories"] = connection.execute("DELETE FROM memories").rowcount
+            counts["notes"] = connection.execute("DELETE FROM notes").rowcount
+            counts["profiles"] = connection.execute("DELETE FROM user_profiles").rowcount
+            counts["soul_states"] = connection.execute("DELETE FROM soul_states").rowcount
+            connection.execute("DELETE FROM state")
+            self._set_state(connection, "fts_available", "1" if fts_available else "0")
+        return counts
+
     @staticmethod
     def note_from_row(row: sqlite3.Row) -> NoteRecord:
         return NoteRecord(
