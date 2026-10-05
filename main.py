@@ -3,7 +3,9 @@
 import asyncio
 import hashlib
 import json
+import os
 import re
+import shutil
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -472,6 +474,45 @@ def _render_rank_text(profiles: list[Any]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- uploads 落点
+#: 消息管线只认路径里含 `uploads` / `shared` 段的「沙盒路径」，并会把
+#: `/app/uploads/<相对>` 还原成 `<NEKRO_DATA_DIR>/uploads/<清洗后的 chat_key>/<相对>`。
+#: 直接把插件数据目录（`plugin_data/...`）交给它，会抛
+#: `Unable to detect path location ... make sure your path is valid shared path or upload path`，
+#: 图片根本发不出去。所以「发到频道」的图必须先落到 uploads 下。
+_SANDBOX_UPLOAD_ROOT = "/app/uploads"
+
+try:  # 与框架共用同一套清洗规则，避免目录名对不上
+    from nekro_agent.tools.path_convertor import sanitize_chat_key_for_path as _sanitize_chat_key
+except Exception:  # pragma: no cover - 仅为兼容没有该函数的上游版本
+
+    def _sanitize_chat_key(chat_key: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9_.-]", "_", str(chat_key or "")) or "unknown"
+
+
+def _nekro_data_dir() -> Path:
+    """Nekro 数据根目录（`uploads/` 就在它下面）。"""
+    env = str(os.environ.get("NEKRO_DATA_DIR") or "").strip()
+    if env:
+        return Path(env)
+    # 回退：<DATA_DIR>/plugin_data/<插件ID> 往上两级
+    return plugin.get_plugin_data_dir().parent.parent
+
+
+def publish_rank_card(card_path: Path, chat_key: str) -> str:
+    """把渲染好的卡片复制进 uploads，返回可直接交给消息管线的沙盒路径。
+
+    `build_rank_card()` 把图写在插件数据目录里（管理 API 直接 `FileResponse` 用它），
+    但那条路径发不进群 —— 消息管线会把它判为非法路径。这里在 uploads 下放一份同名
+    副本，并返回 `/app/uploads/favor_rank/<文件名>`；管线还原后正好指向这份副本。
+    """
+    name = Path(card_path).name
+    target = _nekro_data_dir() / "uploads" / _sanitize_chat_key(chat_key) / "favor_rank" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(card_path, target)
+    return f"{_SANDBOX_UPLOAD_ROOT}/favor_rank/{name}"
+
+
 async def build_rank_card(chat_key: str, profiles: list[Any]) -> Path | None:
     """渲染排行榜卡片；未开启、缺 Pillow/字体或出错时返回 None。"""
     if not config.FAVOR_RANK_CARD_ENABLED or not profiles:
@@ -541,13 +582,21 @@ async def send_favor_rank(chat_key: str, _ctx: AgentCtx) -> bool:
     if card_path is None:
         await message_api.send_text(chat_key, _render_rank_text(profiles), _ctx, record=False)
         return True
+    try:
+        # 必须先落到 uploads：消息管线只认含 uploads 段的沙盒路径，
+        # 直接发插件数据目录会被判为非法路径（历史 bug，见 publish_rank_card）。
+        card_send_path = await asyncio.to_thread(publish_rank_card, card_path, chat_key)
+    except Exception:
+        logger.exception("排行榜卡片复制到 uploads 失败，降级为文字排行")
+        await message_api.send_text(chat_key, _render_rank_text(profiles), _ctx, record=False)
+        return True
     await message_api.send_text(
         chat_key,
         f"本频道好感度排行榜（共 {len(profiles)} 人）",
         _ctx,
         record=False,
     )
-    await message_api.send_image(chat_key, str(card_path), _ctx, record=False)
+    await message_api.send_image(chat_key, card_send_path, _ctx, record=False)
     return True
 
 
