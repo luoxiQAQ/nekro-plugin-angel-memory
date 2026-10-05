@@ -566,10 +566,17 @@ async def load_rank_profiles(chat_key: str) -> list[Any]:
 
 
 async def send_favor_rank(chat_key: str, _ctx: AgentCtx) -> bool:
-    """把排行榜直接发到频道（命令与无前缀关键词两条入口共用）。
+    """无前缀关键词入口专用：把排行榜直接发到频道。
 
     Nekro 的命令系统强制要求命令前缀，不带前缀的「查看好感度」不会进命令系统，
     因此关键词入口必须自己把结果发出去。返回 True 表示已发送（含空态提示）。
+
+    形态对齐说明：带前缀的 `/查看好感度` 走框架命令输出管线，文本会被加上
+    `AI_COMMAND_OUTPUT_PREFIX`（`≡NA≡:`）且图文合并成一条。关键词入口走的是插件
+    直发通道（`send_text` / `send_image`），既拿不到那个前缀、也没法合并图文。
+    为了不让两条入口看起来像两个不同的功能，成功出图时这里**只发卡片图片**，
+    不再单独发一行「本频道好感度排行榜（共 N 人）」——卡片标题里已经有同样信息。
+    降级路径（无卡片 / 复制失败 / 无数据 / 功能关闭）仍然发文字，因为那时没有图。
     """
     if not config.ENABLE_FAVORABILITY:
         await message_api.send_text(chat_key, FAVOR_DISABLED_HINT, _ctx, record=False)
@@ -590,12 +597,6 @@ async def send_favor_rank(chat_key: str, _ctx: AgentCtx) -> bool:
         logger.exception("排行榜卡片复制到 uploads 失败，降级为文字排行")
         await message_api.send_text(chat_key, _render_rank_text(profiles), _ctx, record=False)
         return True
-    await message_api.send_text(
-        chat_key,
-        f"本频道好感度排行榜（共 {len(profiles)} 人）",
-        _ctx,
-        record=False,
-    )
     await message_api.send_image(chat_key, card_send_path, _ctx, record=False)
     return True
 
