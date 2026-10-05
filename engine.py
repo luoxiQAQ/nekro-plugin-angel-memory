@@ -6,6 +6,7 @@ import re
 import time
 from typing import Any
 
+from nekro_agent.core.logger import get_sub_logger
 from nekro_agent.models.db_chat_channel import DBChatChannel
 from nekro_agent.models.db_chat_message import DBChatMessage
 from nekro_agent.schemas.agent_ctx import AgentCtx
@@ -24,6 +25,8 @@ from .favorability import (
 from .models import FavorProfile, MemoryRecord, NoteRecord
 from .plugin import config, plugin
 from .storage import AngelMemoryStorage, normalize_tags
+
+logger = get_sub_logger("angel_memory")
 
 SENSITIVE_MEMORY_PATTERNS = (
     re.compile(r"-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----", re.IGNORECASE),

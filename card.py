@@ -40,6 +40,7 @@ TOP_BORDER = (246, 214, 170)
 TEXT_MAIN = (60, 54, 50)
 TEXT_SUB = (152, 145, 138)
 RED = (233, 76, 76)
+GREEN = (58, 163, 106)
 BAR_BG = (244, 236, 230)
 TAG_BG = (253, 238, 234)
 TAG_FG = (214, 104, 90)
@@ -309,19 +310,26 @@ def _draw_row(
     # 右侧分数 / 进度条 / 阶段
     right = x0 + width - 20
     score = int(entry.get("score") or 0)
-    score_text = f"+{score}" if score >= 0 else str(score)
-    draw.text((right, y0 + 8), score_text, font=f_score, fill=RED, anchor="ra")
+    score_text = f"+{score}" if score > 0 else str(score)
+    # 中式涨红跌绿：正分红、负分绿、零分灰
+    if score > 0:
+        accent = RED
+    elif score < 0:
+        accent = GREEN
+    else:
+        accent = TEXT_SUB
+    draw.text((right, y0 + 8), score_text, font=f_score, fill=accent, anchor="ra")
 
     bar_width = 96
     bar_left = right - bar_width
     bar_top = y0 + 44
     draw.rounded_rectangle((bar_left, bar_top, right, bar_top + 6), radius=3, fill=BAR_BG)
-    ratio = max(0.0, min(1.0, score / max(1, int(max_abs))))
+    ratio = max(0.0, min(1.0, abs(score) / max(1, int(max_abs))))
     if ratio > 0:
         draw.rounded_rectangle(
             (bar_left, bar_top, bar_left + max(6, int(bar_width * ratio)), bar_top + 6),
             radius=3,
-            fill=RED,
+            fill=accent,
         )
     draw.text((right, y0 + 54), str(entry.get("stage") or ""), font=f_stage, fill=TEXT_SUB, anchor="ra")
 
