@@ -881,17 +881,33 @@ class AngelMemoryStorage:
         chat_key: str,
         user_id: str,
         display_name: str = "",
+        auto_enroll: bool = False,
         now: float | None = None,
-    ) -> None:
-        """只在档案已存在时更新最近互动时间与（空）昵称，不会凭空建档。"""
+    ) -> bool:
+        """更新最近互动时间与（空）昵称。
+
+        `auto_enroll=True` 时档案不存在会**当场建档**（「聊过就进榜」模式）：
+        新档案落在默认阶段（中立）、零证据，**阶段跃迁仍然只由关系事件驱动**，
+        所以这不改变状态机语义，只是让排行榜先有花名册。
+        默认 `False` 保持原行为：只在档案已存在时更新，不会凭空建档。
+
+        Returns:
+            bool: True 表示本次新建了档案。
+        """
+        if not str(chat_key or "").strip() or not str(user_id or "").strip():
+            return False
         timestamp = float(now or time.time())
+        created = False
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT user_id FROM favorability WHERE chat_key=? AND user_id=?",
                 (chat_key, user_id),
             ).fetchone()
             if row is None:
-                return
+                if not auto_enroll:
+                    return False
+                self._ensure_favor_row(connection, chat_key, user_id, timestamp)
+                created = True
             connection.execute(
                 "UPDATE favorability SET last_interaction_at=? WHERE chat_key=? AND user_id=?",
                 (timestamp, chat_key, user_id),
@@ -902,6 +918,7 @@ class AngelMemoryStorage:
                     "AND (display_name='' OR display_name IS NULL)",
                     (str(display_name).strip(), chat_key, user_id),
                 )
+        return created
 
     def _ensure_favor_row(self, connection: sqlite3.Connection, chat_key: str, user_id: str, now: float) -> sqlite3.Row:
         row = connection.execute(
