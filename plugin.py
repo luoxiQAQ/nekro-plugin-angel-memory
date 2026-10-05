@@ -7,7 +7,7 @@ plugin = NekroPlugin(
     name="天使记忆",
     module_name="nekro_memory_angel",
     description="分层长期记忆、滑动窗口短期记忆、结构化事实、回忆、用户画像、灵魂状态与事件驱动关系状态机",
-    version="1.2.0",
+    version="1.2.1",
     author="luoxiQAQ",
     url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
     allow_sleep=False,
@@ -158,6 +158,23 @@ class AngelMemoryConfig(ConfigBase):
     )
     FAVOR_RANK_AVATAR: bool = Field(
         default=True, title="排行榜拉取头像", description="按 QQ 号从 qlogo 拉头像；关闭后卡片用昵称首字占位。",
+    )
+    FAVOR_RANK_KEYWORD_ENABLED: bool = Field(
+        default=True,
+        title="允许无前缀关键词触发排行榜",
+        description=(
+            "开启后，群里直接发「查看好感度」（不带框架命令前缀 /）也会出排行榜。"
+            "Nekro 的命令系统强制要求前缀，不带前缀的文本不会进入命令系统，"
+            "这里用消息钩子精确匹配关键词来兜底，命中后阻止该消息再唤醒 AI。"
+        ),
+    )
+    FAVOR_RANK_KEYWORDS: str = Field(
+        default="查看好感度,好感榜",
+        title="无前缀触发关键词",
+        description=(
+            "逗号或空格分隔，必须与整条消息完全相等才触发（不做包含匹配，避免误触发）。"
+            "注意不要填「好感度」——它是第三方「抽老婆」插件 affinity 的别名，含义不同。"
+        ),
     )
     WEBUI_ACCESS_KEY: str = Field(
         default="",
