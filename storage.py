@@ -10,8 +10,24 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
-from .favorability import decay_delta, recover_delta
-from .models import FavorProfile, MemoryRecord, NoteRecord, SoulState
+from .favorability import (
+    DEFAULT_STAGE,
+    EVENT_KINDS,
+    STAGE_NAMES,
+    EventLimits,
+    EventOutcome,
+    StageDecision,
+    TransitionRules,
+    clamp_stage,
+    decide_stage,
+    evaluate_event,
+    evidence_decay,
+    kind_label,
+    project_score,
+    score_to_stage,
+    stage_index,
+)
+from .models import DigestRecord, FactRecord, FavorProfile, MemoryRecord, NoteRecord, SoulState
 
 ASCII_PATTERN = re.compile(r'[a-zA-Z0-9_-]{2,}')
 CJK_PATTERN = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff]+')
@@ -109,20 +125,47 @@ class AngelMemoryStorage:
                 );
                 CREATE TABLE IF NOT EXISTS favorability (
                     chat_key TEXT NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '',
+                    stage TEXT NOT NULL DEFAULT '中立', stage_entered_at REAL NOT NULL DEFAULT 0,
+                    pos_weight REAL NOT NULL DEFAULT 0, neg_weight REAL NOT NULL DEFAULT 0,
+                    pos_kinds_json TEXT NOT NULL DEFAULT '[]', neg_kinds_json TEXT NOT NULL DEFAULT '[]',
                     score INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL DEFAULT '',
                     interaction_hint TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',
-                    last_reason TEXT NOT NULL DEFAULT '', last_adjust_at REAL NOT NULL DEFAULT 0,
+                    last_reason TEXT NOT NULL DEFAULT '', last_kind TEXT NOT NULL DEFAULT '',
+                    last_adjust_at REAL NOT NULL DEFAULT 0, last_event_at REAL NOT NULL DEFAULT 0,
+                    event_count INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL, updated_at REAL NOT NULL, last_interaction_at REAL NOT NULL,
                     PRIMARY KEY(chat_key, user_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_favor_scope ON favorability(chat_key, score DESC);
                 CREATE TABLE IF NOT EXISTS favorability_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, chat_key TEXT NOT NULL, user_id TEXT NOT NULL,
-                    delta INTEGER NOT NULL, reason TEXT NOT NULL, score_after INTEGER NOT NULL,
-                    created_at REAL NOT NULL
+                    kind TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',
+                    polarity INTEGER NOT NULL DEFAULT 0, severity INTEGER NOT NULL DEFAULT 0,
+                    weight REAL NOT NULL DEFAULT 0, evidence TEXT NOT NULL DEFAULT '',
+                    stage_before TEXT NOT NULL DEFAULT '', stage_after TEXT NOT NULL DEFAULT '',
+                    delta INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',
+                    score_after INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_favor_events
                     ON favorability_events(chat_key, user_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS facts (
+                    id TEXT PRIMARY KEY, short_id INTEGER NOT NULL UNIQUE,
+                    chat_key TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '',
+                    subject TEXT NOT NULL DEFAULT '', attribute TEXT NOT NULL DEFAULT '',
+                    value TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.8,
+                    source TEXT NOT NULL DEFAULT 'auto', status TEXT NOT NULL DEFAULT 'active',
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                    UNIQUE(chat_key, user_id, subject, attribute)
+                );
+                CREATE INDEX IF NOT EXISTS idx_facts_scope
+                    ON facts(chat_key, user_id, status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS digests (
+                    id TEXT PRIMARY KEY, chat_key TEXT NOT NULL,
+                    window_start INTEGER NOT NULL DEFAULT 0, window_end INTEGER NOT NULL DEFAULT 0,
+                    summary TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_digests_scope ON digests(chat_key, window_end DESC);
                 """
             )
             self._migrate_schema(connection)
@@ -148,6 +191,57 @@ class AngelMemoryStorage:
             connection.execute(
                 "ALTER TABLE memories ADD COLUMN min_favor INTEGER NOT NULL DEFAULT 0"
             )
+
+        favor_columns = {row["name"] for row in connection.execute("PRAGMA table_info(favorability)")}
+        favor_additions = (
+            ("stage", "TEXT NOT NULL DEFAULT '中立'"),
+            ("stage_entered_at", "REAL NOT NULL DEFAULT 0"),
+            ("pos_weight", "REAL NOT NULL DEFAULT 0"),
+            ("neg_weight", "REAL NOT NULL DEFAULT 0"),
+            ("pos_kinds_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("neg_kinds_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("last_kind", "TEXT NOT NULL DEFAULT ''"),
+            ("last_event_at", "REAL NOT NULL DEFAULT 0"),
+            ("event_count", "INTEGER NOT NULL DEFAULT 0"),
+        )
+        for name, ddl in favor_additions:
+            if name not in favor_columns:
+                connection.execute(f"ALTER TABLE favorability ADD COLUMN {name} {ddl}")
+
+        event_columns = {row["name"] for row in connection.execute("PRAGMA table_info(favorability_events)")}
+        event_additions = (
+            ("kind", "TEXT NOT NULL DEFAULT ''"),
+            ("label", "TEXT NOT NULL DEFAULT ''"),
+            ("polarity", "INTEGER NOT NULL DEFAULT 0"),
+            ("severity", "INTEGER NOT NULL DEFAULT 0"),
+            ("weight", "REAL NOT NULL DEFAULT 0"),
+            ("evidence", "TEXT NOT NULL DEFAULT ''"),
+            ("stage_before", "TEXT NOT NULL DEFAULT ''"),
+            ("stage_after", "TEXT NOT NULL DEFAULT ''"),
+        )
+        for name, ddl in event_additions:
+            if name not in event_columns:
+                connection.execute(f"ALTER TABLE favorability_events ADD COLUMN {name} {ddl}")
+
+        # 老库只有裸分数：按分数回填阶段，并把分数差额折算成阶段内证据
+        if "stage" not in favor_columns:
+            for row in connection.execute("SELECT chat_key,user_id,score FROM favorability").fetchall():
+                score = int(row["score"] or 0)
+                if score == 0:
+                    continue
+                connection.execute(
+                    "UPDATE favorability SET stage=?,stage_entered_at=?,pos_weight=?,neg_weight=?,"
+                    "last_kind='',event_count=CASE WHEN event_count>0 THEN event_count ELSE 1 END,"
+                    "updated_at=updated_at WHERE chat_key=? AND user_id=?",
+                    (
+                        score_to_stage(score),
+                        float(row["created_at"] if "created_at" in row.keys() else 0) or 0.0,
+                        float(max(0, score)) / 20.0,
+                        float(max(0, -score)) / 20.0,
+                        row["chat_key"],
+                        row["user_id"],
+                    ),
+                )
 
     @staticmethod
     def _set_state(connection: sqlite3.Connection, key: str, value: str) -> None:
@@ -491,7 +585,7 @@ class AngelMemoryStorage:
         chat_key = str(chat_key).strip()
         if not chat_key:
             raise ValueError("chat_key cannot be empty")
-        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0, "favorability": 0}
+        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0, "favorability": 0, "facts": 0, "digests": 0}
         with self.connect() as connection:
             if self._fts_enabled(connection):
                 connection.execute(
@@ -510,10 +604,12 @@ class AngelMemoryStorage:
                 "DELETE FROM favorability WHERE chat_key=?", (chat_key,)
             ).rowcount
             connection.execute("DELETE FROM favorability_events WHERE chat_key=?", (chat_key,))
+            counts["facts"] = connection.execute("DELETE FROM facts WHERE chat_key=?", (chat_key,)).rowcount
+            counts["digests"] = connection.execute("DELETE FROM digests WHERE chat_key=?", (chat_key,)).rowcount
         return counts
 
     def reset_all(self) -> dict[str, int]:
-        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0, "favorability": 0}
+        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0, "favorability": 0, "facts": 0, "digests": 0}
         with self.connect() as connection:
             fts_available = self._fts_enabled(connection)
             if fts_available:
@@ -525,6 +621,8 @@ class AngelMemoryStorage:
             counts["soul_states"] = connection.execute("DELETE FROM soul_states").rowcount
             counts["favorability"] = connection.execute("DELETE FROM favorability").rowcount
             connection.execute("DELETE FROM favorability_events")
+            counts["facts"] = connection.execute("DELETE FROM facts").rowcount
+            counts["digests"] = connection.execute("DELETE FROM digests").rowcount
             connection.execute("DELETE FROM state")
             self._set_state(connection, "fts_available", "1" if fts_available else "0")
         return counts
@@ -678,6 +776,8 @@ class AngelMemoryStorage:
                 dict(row)
                 for row in connection.execute("SELECT * FROM favorability_events ORDER BY id")
             ]
+            facts = [dict(row) for row in connection.execute("SELECT * FROM facts ORDER BY created_at")]
+            digests = [dict(row) for row in connection.execute("SELECT * FROM digests ORDER BY window_end")]
         for row in memories:
             row["tags"] = json.loads(row.pop("tags_json") or "[]")
         for row in notes:
@@ -686,14 +786,20 @@ class AngelMemoryStorage:
             row["attributes"] = json.loads(row.pop("attributes_json") or "{}")
         for row in favors:
             row["tags"] = json.loads(row.pop("tags_json") or "[]")
+            row["pos_kinds"] = json.loads(row.pop("pos_kinds_json") or "[]")
+            row["neg_kinds"] = json.loads(row.pop("neg_kinds_json") or "[]")
+        for row in digests:
+            row["tags"] = json.loads(row.pop("tags_json") or "[]")
         return {
-            "version": 2,
+            "version": 3,
             "memories": memories,
             "notes": notes,
             "profiles": profiles,
             "soul_states": soul_states,
             "favorability": favors,
             "favorability_events": favor_events,
+            "facts": facts,
+            "digests": digests,
         }
 
     def import_memories(self, memories: Iterable[dict[str, Any]], *, default_chat_key: str = "") -> dict[str, int]:
@@ -746,25 +852,27 @@ class AngelMemoryStorage:
         chat_key: str,
         user_id: str,
         display_name: str = "",
-        default_score: int = 0,
+        default_stage: str = DEFAULT_STAGE,
     ) -> FavorProfile:
         profile = self.get_favor(chat_key=chat_key, user_id=user_id)
         if profile is not None:
             return profile
         now = time.time()
+        stage = clamp_stage(default_stage)
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO favorability(
-                    chat_key,user_id,display_name,score,summary,interaction_hint,tags_json,
-                    last_reason,last_adjust_at,created_at,updated_at,last_interaction_at
-                ) VALUES(?,?,?,?,'','','[]','',0,?,?,?)
+                    chat_key,user_id,display_name,stage,stage_entered_at,score,summary,interaction_hint,
+                    tags_json,last_reason,last_kind,last_adjust_at,last_event_at,event_count,
+                    created_at,updated_at,last_interaction_at
+                ) VALUES(?,?,?,?,?,0,'','','[]','','',0,0,0,?,?,?)
                 """,
-                (chat_key, user_id, str(display_name or "").strip(), int(default_score), now, now, now),
+                (chat_key, user_id, str(display_name or "").strip(), stage, now, now, now, now),
             )
         return self.get_favor(chat_key=chat_key, user_id=user_id) or FavorProfile(
             chat_key=chat_key, user_id=user_id, display_name=str(display_name or "").strip(),
-            score=int(default_score), created_at=now, updated_at=now, last_interaction_at=now,
+            stage=stage, stage_entered_at=now, created_at=now, updated_at=now, last_interaction_at=now,
         )
 
     def touch_favor(
@@ -804,11 +912,12 @@ class AngelMemoryStorage:
             connection.execute(
                 """
                 INSERT INTO favorability(
-                    chat_key,user_id,display_name,score,summary,interaction_hint,tags_json,
-                    last_reason,last_adjust_at,created_at,updated_at,last_interaction_at
-                ) VALUES(?,?,'',0,'','','[]','',0,?,?,?)
+                    chat_key,user_id,display_name,stage,stage_entered_at,score,summary,interaction_hint,
+                    tags_json,last_reason,last_kind,last_adjust_at,last_event_at,event_count,
+                    created_at,updated_at,last_interaction_at
+                ) VALUES(?,?,'',?,?,0,'','','[]','','',0,0,0,?,?,?)
                 """,
-                (chat_key, user_id, now, now, now),
+                (chat_key, user_id, DEFAULT_STAGE, now, now, now, now),
             )
             row = connection.execute(
                 "SELECT * FROM favorability WHERE chat_key=? AND user_id=?",
@@ -816,86 +925,262 @@ class AngelMemoryStorage:
             ).fetchone()
         return row
 
-    def _write_favor(
-        self,
+    @staticmethod
+    def _write_favor_state(
         connection: sqlite3.Connection,
         *,
         chat_key: str,
         user_id: str,
+        stage: str,
+        stage_entered_at: float,
+        pos_weight: float,
+        neg_weight: float,
+        pos_kinds: list[str],
+        neg_kinds: list[str],
         score: int,
-        reason: str,
-        summary: str,
-        interaction_hint: str,
-        tags: list[str],
-        display_name: str,
-        delta: int,
+        last_kind: str,
+        last_event_at: float,
+        event_count: int,
         now: float,
-        max_events: int,
-        count_event: bool = True,
     ) -> None:
         connection.execute(
             """
-            UPDATE favorability SET display_name=?,score=?,summary=?,interaction_hint=?,tags_json=?,
-                last_reason=?,last_adjust_at=?,updated_at=?,last_interaction_at=?
+            UPDATE favorability SET stage=?,stage_entered_at=?,pos_weight=?,neg_weight=?,
+                pos_kinds_json=?,neg_kinds_json=?,score=?,last_kind=?,last_event_at=?,event_count=?,
+                updated_at=?,last_interaction_at=?
             WHERE chat_key=? AND user_id=?
             """,
             (
-                display_name, int(score), summary, interaction_hint,
-                json.dumps(tags, ensure_ascii=False), str(reason)[:200],
-                now if count_event else 0, now, now, chat_key, user_id,
+                clamp_stage(stage), float(stage_entered_at), float(pos_weight), float(neg_weight),
+                json.dumps(list(pos_kinds), ensure_ascii=False), json.dumps(list(neg_kinds), ensure_ascii=False),
+                int(score), str(last_kind or ""), float(last_event_at), int(event_count),
+                float(now), float(now), chat_key, user_id,
             ),
         )
-        if count_event:
+
+    def record_favor_event(
+        self,
+        *,
+        chat_key: str,
+        user_id: str,
+        kind: str,
+        evidence: str,
+        severity: int = 2,
+        display_name: str = "",
+        summary: str = "",
+        interaction_hint: str = "",
+        tags: Iterable[str] | None = None,
+        limits: EventLimits | None = None,
+        rules: TransitionRules | None = None,
+        max_events: int = 12,
+        now: float | None = None,
+    ) -> tuple[FavorProfile, EventOutcome, StageDecision]:
+        """记录一次关系事件，并按状态机规则决定是否跃迁阶段。
+
+        这是好感度唯一的写入口：事件是权威来源，`favorability` 行只是投影结果。
+        """
+        timestamp = float(now or time.time())
+        active_limits = limits or EventLimits()
+        active_rules = rules or TransitionRules()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._ensure_favor_row(connection, chat_key, user_id, timestamp)
+            stage_before = clamp_stage(row["stage"])
+            entered_at = float(row["stage_entered_at"] or row["created_at"] or timestamp)
+            last_event_at = float(row["last_event_at"] or 0)
+
+            day_start = timestamp - (timestamp % 86400)
+            totals = connection.execute(
+                "SELECT COUNT(*) AS total,"
+                " SUM(CASE WHEN polarity>0 THEN 1 ELSE 0 END) AS pos,"
+                " SUM(CASE WHEN polarity<0 THEN 1 ELSE 0 END) AS neg "
+                "FROM favorability_events WHERE chat_key=? AND user_id=? AND created_at>=?",
+                (chat_key, user_id, day_start),
+            ).fetchone()
+            events_today = int(totals["total"] or 0)
+            positive_today = int(totals["pos"] or 0)
+            negative_today = int(totals["neg"] or 0)
+
+            normalized_kind = str(kind or "").strip().lower()
+            same_kind = connection.execute(
+                "SELECT COUNT(*) AS c FROM favorability_events "
+                "WHERE chat_key=? AND user_id=? AND kind=? AND created_at>=?",
+                (chat_key, user_id, normalized_kind, entered_at),
+            ).fetchone()
+            same_kind_count = int(same_kind["c"] or 0)
+
+            outcome = evaluate_event(
+                kind=normalized_kind,
+                severity=severity,
+                evidence=evidence,
+                stage=stage_before,
+                same_kind_count=same_kind_count,
+                events_today=events_today,
+                positive_today=positive_today,
+                negative_today=negative_today,
+                last_event_at=last_event_at,
+                now=timestamp,
+                limits=active_limits,
+            )
+            if not outcome.applied:
+                current = self.favor_from_row(row)
+                return current, outcome, StageDecision(stage=stage_before)
+
+            pos_weight = float(row["pos_weight"] or 0)
+            neg_weight = float(row["neg_weight"] or 0)
+            pos_kinds = list(json.loads(row["pos_kinds_json"] or "[]"))
+            neg_kinds = list(json.loads(row["neg_kinds_json"] or "[]"))
+            if outcome.polarity > 0:
+                pos_weight += outcome.weight
+                if normalized_kind not in pos_kinds:
+                    pos_kinds.append(normalized_kind)
+            else:
+                neg_weight += outcome.weight
+                if normalized_kind not in neg_kinds:
+                    neg_kinds.append(normalized_kind)
+
+            decision = decide_stage(
+                stage=stage_before,
+                pos_weight=pos_weight,
+                neg_weight=neg_weight,
+                pos_kinds=len(pos_kinds),
+                entered_at=entered_at,
+                now=timestamp,
+                rules=active_rules,
+            )
+            stage_after = stage_before
+            if decision.reset_evidence:
+                stage_after = decision.stage
+                entered_at = timestamp
+                carried = float(decision.carried)
+                if decision.direction > 0:
+                    pos_weight, neg_weight = max(0.0, carried), 0.0
+                    pos_kinds, neg_kinds = [], []
+                else:
+                    pos_weight, neg_weight = 0.0, max(0.0, -carried)
+                    pos_kinds, neg_kinds = [], []
+
+            score = project_score(stage=stage_after, pos_weight=pos_weight, neg_weight=neg_weight)
+            merged_tags = list(json.loads(row["tags_json"] or "[]"))
+            if tags:
+                merged_tags = normalize_tags([*merged_tags, *tags])
             connection.execute(
-                "INSERT INTO favorability_events(chat_key,user_id,delta,reason,score_after,created_at) "
-                "VALUES(?,?,?,?,?,?)",
-                (chat_key, user_id, int(delta), str(reason)[:200], int(score), now),
+                "UPDATE favorability SET display_name=?,summary=?,interaction_hint=?,tags_json=?,last_reason=?,"
+                "last_adjust_at=? WHERE chat_key=? AND user_id=?",
+                (
+                    str(display_name or "").strip() or row["display_name"],
+                    str(summary or "").strip() or row["summary"],
+                    str(interaction_hint or "").strip() or row["interaction_hint"],
+                    json.dumps(merged_tags, ensure_ascii=False),
+                    " ".join(str(evidence or "").split())[:active_limits.max_evidence_chars],
+                    timestamp, chat_key, user_id,
+                ),
+            )
+            self._write_favor_state(
+                connection,
+                chat_key=chat_key,
+                user_id=user_id,
+                stage=stage_after,
+                stage_entered_at=entered_at,
+                pos_weight=pos_weight,
+                neg_weight=neg_weight,
+                pos_kinds=pos_kinds,
+                neg_kinds=neg_kinds,
+                score=score,
+                last_kind=normalized_kind,
+                last_event_at=timestamp,
+                event_count=int(row["event_count"] or 0) + 1,
+                now=timestamp,
+            )
+            connection.execute(
+                "INSERT INTO favorability_events(chat_key,user_id,kind,label,polarity,severity,weight,"
+                "evidence,stage_before,stage_after,delta,reason,score_after,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    chat_key, user_id, normalized_kind, kind_label(normalized_kind), outcome.polarity,
+                    int(max(1, min(active_limits.max_severity, int(severity)))),
+                    float(outcome.weight), " ".join(str(evidence or "").split())[:active_limits.max_evidence_chars],
+                    stage_before, stage_after, 1 if outcome.polarity > 0 else -1,
+                    " ".join(str(evidence or "").split())[:200], score, timestamp,
+                ),
             )
             connection.execute(
                 "DELETE FROM favorability_events WHERE chat_key=? AND user_id=? AND id NOT IN "
                 "(SELECT id FROM favorability_events WHERE chat_key=? AND user_id=? ORDER BY id DESC LIMIT ?)",
                 (chat_key, user_id, chat_key, user_id, max(1, int(max_events))),
             )
+            updated = connection.execute(
+                "SELECT * FROM favorability WHERE chat_key=? AND user_id=?",
+                (chat_key, user_id),
+            ).fetchone()
+        return self.favor_from_row(updated), outcome, decision
 
-    def apply_favor_delta(
+    def set_favor_stage(
         self,
         *,
         chat_key: str,
         user_id: str,
-        delta: int,
-        reason: str,
+        stage: str,
+        reason: str = "",
         display_name: str = "",
         summary: str = "",
         interaction_hint: str = "",
         tags: Iterable[str] | None = None,
-        max_abs: int = 100,
-        max_events: int = 8,
+        max_events: int = 12,
         now: float | None = None,
     ) -> FavorProfile:
+        """人工直接设定阶段（覆盖状态机），会清空当前阶段内的证据。"""
         timestamp = float(now or time.time())
+        target_stage = clamp_stage(stage)
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._ensure_favor_row(connection, chat_key, user_id, timestamp)
-            score = max(-int(max_abs), min(int(max_abs), int(row["score"]) + int(delta)))
-            merged_tags = json.loads(row["tags_json"] or "[]")
+            stage_before = clamp_stage(row["stage"])
+            merged_tags = list(json.loads(row["tags_json"] or "[]"))
             if tags:
                 merged_tags = normalize_tags([*merged_tags, *tags])
-            name = str(display_name or "").strip() or row["display_name"]
-            self._write_favor(
+            score = project_score(stage=target_stage, pos_weight=0.0, neg_weight=0.0)
+            connection.execute(
+                "UPDATE favorability SET display_name=?,summary=?,interaction_hint=?,tags_json=?,last_reason=?,"
+                "last_adjust_at=? WHERE chat_key=? AND user_id=?",
+                (
+                    str(display_name or "").strip() or row["display_name"],
+                    str(summary or "").strip() or row["summary"],
+                    str(interaction_hint or "").strip() or row["interaction_hint"],
+                    json.dumps(merged_tags, ensure_ascii=False),
+                    str(reason or "人工设定关系阶段")[:200], timestamp, chat_key, user_id,
+                ),
+            )
+            self._write_favor_state(
                 connection,
                 chat_key=chat_key,
                 user_id=user_id,
+                stage=target_stage,
+                stage_entered_at=timestamp,
+                pos_weight=0.0,
+                neg_weight=0.0,
+                pos_kinds=[],
+                neg_kinds=[],
                 score=score,
-                reason=reason,
-                summary=str(summary).strip() if str(summary or "").strip() else row["summary"],
-                interaction_hint=(
-                    str(interaction_hint).strip() if str(interaction_hint or "").strip() else row["interaction_hint"]
-                ),
-                tags=merged_tags,
-                display_name=name,
-                delta=int(delta),
+                last_kind="manual_set",
+                last_event_at=timestamp,
+                event_count=int(row["event_count"] or 0) + 1,
                 now=timestamp,
-                max_events=max_events,
+            )
+            connection.execute(
+                "INSERT INTO favorability_events(chat_key,user_id,kind,label,polarity,severity,weight,"
+                "evidence,stage_before,stage_after,delta,reason,score_after,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    chat_key, user_id, "manual_set", "人工设定", 0, 2, 0.0,
+                    str(reason or "人工设定关系阶段")[:200], stage_before, target_stage, 0,
+                    str(reason or "人工设定关系阶段")[:200], score, timestamp,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM favorability_events WHERE chat_key=? AND user_id=? AND id NOT IN "
+                "(SELECT id FROM favorability_events WHERE chat_key=? AND user_id=? ORDER BY id DESC LIMIT ?)",
+                (chat_key, user_id, chat_key, user_id, max(1, int(max_events))),
             )
             updated = connection.execute(
                 "SELECT * FROM favorability WHERE chat_key=? AND user_id=?",
@@ -903,40 +1188,33 @@ class AngelMemoryStorage:
             ).fetchone()
         return self.favor_from_row(updated)
 
-    def overwrite_favor(
+    def update_favor_profile(
         self,
         *,
         chat_key: str,
         user_id: str,
-        score: int,
-        reason: str,
-        display_name: str = "",
-        summary: str = "",
-        interaction_hint: str = "",
+        display_name: str | None = None,
+        summary: str | None = None,
+        interaction_hint: str | None = None,
         tags: Iterable[str] | None = None,
-        max_abs: int = 100,
-        max_events: int = 8,
         now: float | None = None,
-    ) -> FavorProfile:
+    ) -> FavorProfile | None:
+        """只改档案的文字描述，不动关系状态。"""
         timestamp = float(now or time.time())
         with self.connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             row = self._ensure_favor_row(connection, chat_key, user_id, timestamp)
-            new_score = max(-int(max_abs), min(int(max_abs), int(score)))
-            name = str(display_name or "").strip() or row["display_name"]
-            self._write_favor(
-                connection,
-                chat_key=chat_key,
-                user_id=user_id,
-                score=new_score,
-                reason=reason or "手动重设好感度档案",
-                summary=str(summary or "").strip() or row["summary"],
-                interaction_hint=str(interaction_hint or "").strip() or row["interaction_hint"],
-                tags=normalize_tags(tags) if tags is not None else json.loads(row["tags_json"] or "[]"),
-                display_name=name,
-                delta=new_score - int(row["score"]),
-                now=timestamp,
-                max_events=max_events,
+            merged_tags = list(json.loads(row["tags_json"] or "[]"))
+            if tags is not None:
+                merged_tags = normalize_tags([*merged_tags, *tags])
+            connection.execute(
+                "UPDATE favorability SET display_name=?,summary=?,interaction_hint=?,tags_json=?,updated_at=? "
+                "WHERE chat_key=? AND user_id=?",
+                (
+                    str(display_name).strip() if display_name is not None else row["display_name"],
+                    str(summary).strip() if summary is not None else row["summary"],
+                    str(interaction_hint).strip() if interaction_hint is not None else row["interaction_hint"],
+                    json.dumps(merged_tags, ensure_ascii=False), timestamp, chat_key, user_id,
+                ),
             )
             updated = connection.execute(
                 "SELECT * FROM favorability WHERE chat_key=? AND user_id=?",
@@ -966,12 +1244,16 @@ class AngelMemoryStorage:
     ) -> list[FavorProfile]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM favorability WHERE chat_key=? ORDER BY score DESC,updated_at DESC",
-                (chat_key,),
+                "SELECT * FROM favorability WHERE chat_key=?", (chat_key,)
             ).fetchall()
         profiles = [self.favor_from_row(row) for row in rows]
         if hide_empty:
             profiles = [profile for profile in profiles if not profile.is_empty()]
+        # 阶段优先，其次投影分，最后最近更新
+        profiles.sort(
+            key=lambda item: (stage_index(item.stage), int(item.score), float(item.updated_at)),
+            reverse=True,
+        )
         start = max(0, int(offset))
         size = max(1, min(int(limit), 200))
         return profiles[start : start + size]
@@ -982,13 +1264,22 @@ class AngelMemoryStorage:
     def list_favor_events(self, *, chat_key: str, user_id: str, limit: int = 5) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT delta,reason,score_after,created_at FROM favorability_events "
+                "SELECT kind,label,polarity,severity,weight,evidence,stage_before,stage_after,"
+                "delta,reason,score_after,created_at FROM favorability_events "
                 "WHERE chat_key=? AND user_id=? ORDER BY id DESC LIMIT ?",
-                (chat_key, user_id, max(1, min(int(limit), 50))),
+                (chat_key, user_id, max(1, min(int(limit), 100))),
             ).fetchall()
         return [
             {
-                "delta": int(row["delta"]),
+                "kind": row["kind"],
+                "label": row["label"] or row["kind"],
+                "polarity": int(row["polarity"] or 0),
+                "severity": int(row["severity"] or 0),
+                "weight": float(row["weight"] or 0),
+                "evidence": row["evidence"] or row["reason"],
+                "stage_before": row["stage_before"],
+                "stage_after": row["stage_after"],
+                "delta": int(row["delta"] or 0),
                 "reason": row["reason"],
                 "score_after": int(row["score_after"]),
                 "created_at": float(row["created_at"]),
@@ -996,79 +1287,295 @@ class AngelMemoryStorage:
             for row in rows
         ]
 
-    def favor_daily_totals(self, *, chat_key: str, user_id: str, since_ts: float) -> tuple[int, int]:
-        """返回 (今日累计加分, 今日累计扣分绝对值)。"""
+    def favor_event_totals(self, *, chat_key: str, user_id: str, since_ts: float) -> tuple[int, int, int]:
+        """返回 (事件总数, 正向数, 负向数)。"""
         with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT delta FROM favorability_events WHERE chat_key=? AND user_id=? AND created_at>=?",
+            row = connection.execute(
+                "SELECT COUNT(*) AS total,"
+                " SUM(CASE WHEN polarity>0 THEN 1 ELSE 0 END) AS pos,"
+                " SUM(CASE WHEN polarity<0 THEN 1 ELSE 0 END) AS neg "
+                "FROM favorability_events WHERE chat_key=? AND user_id=? AND created_at>=?",
                 (chat_key, user_id, float(since_ts)),
-            ).fetchall()
-        gain = sum(int(row["delta"]) for row in rows if int(row["delta"]) > 0)
-        loss = sum(-int(row["delta"]) for row in rows if int(row["delta"]) < 0)
-        return gain, loss
+            ).fetchone()
+        return int(row["total"] or 0), int(row["pos"] or 0), int(row["neg"] or 0)
 
-    def apply_favor_decay(self, *, interval_hours: int, percent: int, now: float | None = None) -> int:
-        """对「超过 interval_hours 未互动」的正分档案降温，返回受影响条数。"""
+    def erode_favor_evidence(
+        self,
+        *,
+        elapsed_hours: float,
+        half_life_hours: float,
+        rules: TransitionRules | None = None,
+        now: float | None = None,
+    ) -> dict[str, int]:
+        """随时间衰减阶段内证据，并让长期无互动的关系自然回落一级。
+
+        注意：这里衰减的是**证据权重**，不是分数；分数只是投影，会跟着变。
+        """
         timestamp = float(now or time.time())
-        cutoff = timestamp - max(1, int(interval_hours)) * 3600
-        changed = 0
+        active_rules = rules or TransitionRules()
+        factor = 0.5 ** (max(0.0, float(elapsed_hours)) / max(1.0, float(half_life_hours)))
+        eroded = 0
+        demoted = 0
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
-                "SELECT chat_key,user_id,score FROM favorability WHERE score>0 AND last_interaction_at<=?",
-                (cutoff,),
+                "SELECT * FROM favorability WHERE pos_weight>0.01 OR neg_weight>0.01 OR event_count>0"
             ).fetchall()
             for row in rows:
-                step = decay_delta(int(row["score"]), percent)
-                if step <= 0:
-                    continue
-                new_score = max(0, int(row["score"]) - step)
-                connection.execute(
-                    "UPDATE favorability SET score=?,updated_at=? WHERE chat_key=? AND user_id=?",
-                    (new_score, timestamp, row["chat_key"], row["user_id"]),
+                chat_key = row["chat_key"]
+                user_id = row["user_id"]
+                pos_weight = float(row["pos_weight"] or 0) * factor
+                neg_weight = float(row["neg_weight"] or 0) * factor
+                if pos_weight < 0.01:
+                    pos_weight = 0.0
+                if neg_weight < 0.01:
+                    neg_weight = 0.0
+                pos_kinds = list(json.loads(row["pos_kinds_json"] or "[]"))
+                neg_kinds = list(json.loads(row["neg_kinds_json"] or "[]"))
+                stage = clamp_stage(row["stage"])
+                entered_at = float(row["stage_entered_at"] or timestamp)
+                idle_hours = max(0.0, (timestamp - float(row["last_interaction_at"] or timestamp)) / 3600.0)
+                decision = decide_stage(
+                    stage=stage,
+                    pos_weight=pos_weight,
+                    neg_weight=neg_weight,
+                    pos_kinds=len(pos_kinds),
+                    entered_at=entered_at,
+                    now=timestamp,
+                    rules=active_rules,
+                    allow_idle_demote=True,
+                    idle_hours=idle_hours,
                 )
-                connection.execute(
-                    "INSERT INTO favorability_events(chat_key,user_id,delta,reason,score_after,created_at) "
-                    "VALUES(?,?,?,?,?,?)",
-                    (row["chat_key"], row["user_id"], -step, "长时间未互动，自动降温", new_score, timestamp),
+                stage_after = stage
+                if decision.reset_evidence:
+                    stage_after = decision.stage
+                    entered_at = timestamp
+                    pos_weight = 0.0
+                    neg_weight = 0.0
+                    pos_kinds, neg_kinds = [], []
+                    if decision.direction < 0:
+                        demoted += 1
+                    connection.execute(
+                        "INSERT INTO favorability_events(chat_key,user_id,kind,label,polarity,severity,weight,"
+                        "evidence,stage_before,stage_after,delta,reason,score_after,created_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            chat_key, user_id, "idle_demote", "关系回落", -1, 1, 0.0,
+                            decision.reason, stage, stage_after, -1, decision.reason,
+                            project_score(stage=stage_after, pos_weight=0.0, neg_weight=0.0), timestamp,
+                        ),
+                    )
+                else:
+                    eroded += 1
+                score = project_score(stage=stage_after, pos_weight=pos_weight, neg_weight=neg_weight)
+                self._write_favor_state(
+                    connection,
+                    chat_key=chat_key,
+                    user_id=user_id,
+                    stage=stage_after,
+                    stage_entered_at=entered_at,
+                    pos_weight=pos_weight,
+                    neg_weight=neg_weight,
+                    pos_kinds=pos_kinds,
+                    neg_kinds=neg_kinds,
+                    score=score,
+                    last_kind=row["last_kind"],
+                    last_event_at=float(row["last_event_at"] or 0),
+                    event_count=int(row["event_count"] or 0),
+                    now=timestamp,
                 )
-                changed += 1
-        return changed
-
-    def apply_favor_recover(self, *, interval_hours: int, percent: int, now: float | None = None) -> int:
-        """对「超过 interval_hours 未互动」的负分档案回升，返回受影响条数。"""
-        timestamp = float(now or time.time())
-        cutoff = timestamp - max(1, int(interval_hours)) * 3600
-        changed = 0
-        with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT chat_key,user_id,score FROM favorability WHERE score<0 AND last_interaction_at<=?",
-                (cutoff,),
-            ).fetchall()
-            for row in rows:
-                step = recover_delta(int(row["score"]), percent)
-                if step <= 0:
-                    continue
-                new_score = min(0, int(row["score"]) + step)
-                connection.execute(
-                    "UPDATE favorability SET score=?,updated_at=? WHERE chat_key=? AND user_id=?",
-                    (new_score, timestamp, row["chat_key"], row["user_id"]),
-                )
-                connection.execute(
-                    "INSERT INTO favorability_events(chat_key,user_id,delta,reason,score_after,created_at) "
-                    "VALUES(?,?,?,?,?,?)",
-                    (row["chat_key"], row["user_id"], step, "长时间未互动，负分回升", new_score, timestamp),
-                )
-                changed += 1
-        return changed
+        return {"eroded": eroded, "demoted": demoted}
 
     @staticmethod
     def favor_from_row(row: sqlite3.Row) -> FavorProfile:
+        keys = row.keys()
         return FavorProfile(
             chat_key=row["chat_key"], user_id=row["user_id"], display_name=row["display_name"],
+            stage=clamp_stage(row["stage"]) if "stage" in keys else score_to_stage(int(row["score"])),
+            stage_entered_at=float(row["stage_entered_at"]) if "stage_entered_at" in keys else float(row["created_at"]),
+            pos_weight=float(row["pos_weight"]) if "pos_weight" in keys else 0.0,
+            neg_weight=float(row["neg_weight"]) if "neg_weight" in keys else 0.0,
+            pos_kinds=json.loads(row["pos_kinds_json"] or "[]") if "pos_kinds_json" in keys else [],
+            neg_kinds=json.loads(row["neg_kinds_json"] or "[]") if "neg_kinds_json" in keys else [],
             score=int(row["score"]), summary=row["summary"], interaction_hint=row["interaction_hint"],
             tags=json.loads(row["tags_json"] or "[]"), last_reason=row["last_reason"],
-            last_adjust_at=float(row["last_adjust_at"]), created_at=float(row["created_at"]),
+            last_kind=row["last_kind"] if "last_kind" in keys else "",
+            last_adjust_at=float(row["last_adjust_at"]),
+            last_event_at=float(row["last_event_at"]) if "last_event_at" in keys else 0.0,
+            event_count=int(row["event_count"]) if "event_count" in keys else 0,
+            created_at=float(row["created_at"]),
             updated_at=float(row["updated_at"]), last_interaction_at=float(row["last_interaction_at"]),
+        )
+
+    # ------------------------------------------------------------ 结构化事实
+
+    def upsert_fact(
+        self,
+        *,
+        chat_key: str,
+        user_id: str = "",
+        subject: str = "",
+        attribute: str,
+        value: str,
+        confidence: float = 0.8,
+        source: str = "auto",
+        now: float | None = None,
+    ) -> FactRecord:
+        """按 (chat_key,user_id,subject,attribute) 幂等写入结构化事实。"""
+        attribute = str(attribute or "").strip()
+        value = " ".join(str(value or "").split())
+        if not attribute:
+            raise ValueError("Fact attribute cannot be empty")
+        if not value:
+            raise ValueError("Fact value cannot be empty")
+        timestamp = float(now or time.time())
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM facts WHERE chat_key=? AND user_id=? AND subject=? AND attribute=?",
+                (chat_key, user_id, str(subject or "").strip(), attribute),
+            ).fetchone()
+            if existing is None:
+                fact_id = uuid.uuid4().hex
+                short_id = self._next_short_id(connection, "facts")
+                connection.execute(
+                    "INSERT INTO facts(id,short_id,chat_key,user_id,subject,attribute,value,confidence,"
+                    "source,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)",
+                    (
+                        fact_id, short_id, chat_key, user_id, str(subject or "").strip(), attribute,
+                        value, clamp(confidence), source, timestamp, timestamp,
+                    ),
+                )
+            else:
+                fact_id = existing["id"]
+                connection.execute(
+                    "UPDATE facts SET value=?,confidence=?,source=?,status='active',updated_at=? WHERE id=?",
+                    (value, clamp(max(confidence, float(existing["confidence"]))), source, timestamp, fact_id),
+                )
+            row = connection.execute("SELECT * FROM facts WHERE id=?", (fact_id,)).fetchone()
+        return self.fact_from_row(row)
+
+    def get_fact(self, identifier: str | int) -> FactRecord | None:
+        with self.connect() as connection:
+            row = self._resolve_row(connection, "facts", identifier)
+        return self.fact_from_row(row) if row else None
+
+    def list_facts(
+        self,
+        *,
+        chat_key: str,
+        user_id: str = "",
+        limit: int = 20,
+        offset: int = 0,
+        status: str = "active",
+    ) -> list[FactRecord]:
+        query = "SELECT * FROM facts WHERE chat_key=?"
+        params: list[Any] = [chat_key]
+        if user_id:
+            query += " AND (user_id=? OR user_id='')"
+            params.append(user_id)
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        query += " ORDER BY confidence DESC, updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([max(1, min(int(limit), 200)), max(0, int(offset))])
+        with self.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        return [self.fact_from_row(row) for row in rows]
+
+    def search_facts(self, *, chat_key: str, query: str, limit: int = 8) -> list[FactRecord]:
+        tokens = search_tokens(query)
+        if not tokens:
+            return []
+        clauses = " OR ".join("(attribute LIKE ? OR value LIKE ? OR subject LIKE ?)" for _ in tokens[:8])
+        params: list[Any] = [chat_key]
+        for token in tokens[:8]:
+            like = f"%{token}%"
+            params.extend([like, like, like])
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM facts WHERE chat_key=? AND status='active' AND ({clauses}) "
+                "ORDER BY confidence DESC, updated_at DESC LIMIT ?",
+                (*params, max(1, min(int(limit), 50))),
+            ).fetchall()
+        return [self.fact_from_row(row) for row in rows]
+
+    def count_facts(self, *, chat_key: str) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS c FROM facts WHERE chat_key=? AND status='active'", (chat_key,)
+            ).fetchone()
+        return int(row["c"] or 0)
+
+    def delete_fact(self, *, chat_key: str, identifier: str | int) -> bool:
+        with self.connect() as connection:
+            row = self._resolve_row(connection, "facts", identifier)
+            if row is None or row["chat_key"] != chat_key:
+                return False
+            connection.execute("DELETE FROM facts WHERE id=?", (row["id"],))
+        return True
+
+    @staticmethod
+    def fact_from_row(row: sqlite3.Row) -> FactRecord:
+        return FactRecord(
+            id=row["id"], short_id=int(row["short_id"]), chat_key=row["chat_key"], user_id=row["user_id"],
+            subject=row["subject"], attribute=row["attribute"], value=row["value"],
+            confidence=float(row["confidence"]), source=row["source"], status=row["status"],
+            created_at=float(row["created_at"]), updated_at=float(row["updated_at"]),
+        )
+
+    # -------------------------------------------------------------- 滚动摘要
+
+    def add_digest(
+        self,
+        *,
+        chat_key: str,
+        window_start: int,
+        window_end: int,
+        summary: str,
+        tags: Iterable[str] | None = None,
+        now: float | None = None,
+    ) -> DigestRecord:
+        text = " ".join(str(summary or "").split())
+        if not text:
+            raise ValueError("Digest summary cannot be empty")
+        timestamp = float(now or time.time())
+        digest_id = uuid.uuid4().hex
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO digests(id,chat_key,window_start,window_end,summary,tags_json,created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (
+                    digest_id, chat_key, int(window_start), int(window_end), text[:2000],
+                    json.dumps(normalize_tags(tags), ensure_ascii=False), timestamp,
+                ),
+            )
+            row = connection.execute("SELECT * FROM digests WHERE id=?", (digest_id,)).fetchone()
+        return self.digest_from_row(row)
+
+    def latest_digest(self, *, chat_key: str) -> DigestRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM digests WHERE chat_key=? ORDER BY window_end DESC, created_at DESC LIMIT 1",
+                (chat_key,),
+            ).fetchone()
+        return self.digest_from_row(row) if row else None
+
+    def list_digests(self, *, chat_key: str, limit: int = 5) -> list[DigestRecord]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM digests WHERE chat_key=? ORDER BY window_end DESC LIMIT ?",
+                (chat_key, max(1, min(int(limit), 50))),
+            ).fetchall()
+        return [self.digest_from_row(row) for row in rows]
+
+    @staticmethod
+    def digest_from_row(row: sqlite3.Row) -> DigestRecord:
+        return DigestRecord(
+            id=row["id"], chat_key=row["chat_key"], window_start=int(row["window_start"]),
+            window_end=int(row["window_end"]), summary=row["summary"],
+            tags=json.loads(row["tags_json"] or "[]"), created_at=float(row["created_at"]),
         )
 
     @staticmethod

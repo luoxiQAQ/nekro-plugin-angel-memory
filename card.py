@@ -311,10 +311,11 @@ def _draw_row(
     right = x0 + width - 20
     score = int(entry.get("score") or 0)
     score_text = f"+{score}" if score > 0 else str(score)
-    # 中式涨红跌绿：正分红、负分绿、零分灰
-    if score > 0:
+    # 按关系阶段配色：负面阶段绿、中立灰、正面阶段红
+    stage_rank = int(entry.get("stage_rank") or 0)
+    if stage_rank >= 3:
         accent = RED
-    elif score < 0:
+    elif stage_rank <= 1:
         accent = GREEN
     else:
         accent = TEXT_SUB
@@ -324,14 +325,17 @@ def _draw_row(
     bar_left = right - bar_width
     bar_top = y0 + 44
     draw.rounded_rectangle((bar_left, bar_top, right, bar_top + 6), radius=3, fill=BAR_BG)
-    ratio = max(0.0, min(1.0, abs(score) / max(1, int(max_abs))))
+    progress = entry.get("progress")
+    if progress is None:
+        progress = abs(score) / max(1, int(max_abs))
+    ratio = max(0.0, min(1.0, float(progress)))
     if ratio > 0:
         draw.rounded_rectangle(
             (bar_left, bar_top, bar_left + max(6, int(bar_width * ratio)), bar_top + 6),
             radius=3,
             fill=accent,
         )
-    draw.text((right, y0 + 54), str(entry.get("stage") or ""), font=f_stage, fill=TEXT_SUB, anchor="ra")
+    draw.text((right, y0 + 54), str(entry.get("stage") or ""), font=f_stage, fill=accent, anchor="ra")
 
     # 左侧文字区
     text_x = x0 + 116

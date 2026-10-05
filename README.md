@@ -9,11 +9,14 @@
 - `angel_recall`：搜索频道记忆和结构化笔记。
 - `angel_note_read`：通过稳定的 `N<数字>` 标识符读取笔记。
 - `angel_note_create`：创建持久的结构化知识笔记。
+- `记住事实` / `查看事实` / `删除事实`：把「谁·什么属性·什么值」结构化持久化，按需检索而不是反复塞进上下文。
+- 分层记忆：短期滑动窗口（不落库）→ 滚动摘要 → 结构化事实 → 长期记忆 → 画像/灵魂状态。
+- 分层预算注入：各层按权重分配字符预算，超出即截断，不会一股脑全塞进提示词。
 - 自动提示词回忆：自动注入相关的频道和用户记忆。
-- 可选的 LLM 记忆整合：使用配置的 NekroAgent 模型组。
+- 可选的 LLM 记忆整合：使用配置的 NekroAgent 模型组，同时抽取记忆、事实与滚动摘要。
 - 用户画像和四个可调节的灵魂状态维度。
-- 好感度关系层：按频道维护用户好感度、阶段、标签与变动记录，注入当前发言人的关系卡。
-- 好感度门槛门控：记忆可设 `min_favor`，关系没到就不会被讲出来（只会进「暂时不想细说的事」）。
+- 关系状态机：按频道维护用户关系**阶段**，由**关系事件**驱动跃迁，而不是纯数值加减。
+- 关系门槛门控：记忆可设 `min_favor`，关系没到就不会被讲出来（只会进「暂时不想细说的事」）。
 - 好感度排行榜卡片：`查看好感度` 直接出一张排行榜图片。
 - 维护、归档、JSON 导入/导出和 AstrBot 迁移工具。
 - SQLite FTS5 检索，支持中文字符和二元组归一化。
@@ -45,35 +48,61 @@ NEKRO_DATA_DIR/plugin_data/luoxiQAQ.nekro_memory_angel/
 ```
 
 SQLite 数据库为该目录下的 `angel_memory.sqlite3`，包含 `memories`、`notes`、`user_profiles`、
-`soul_states`、`favorability`、`favorability_events`、`state` 以及两张 FTS5 索引表。
-排行榜卡片的缓存图与头像在 `cache/` 子目录下。
+`soul_states`、`facts`（结构化事实）、`digests`（滚动摘要）、`favorability`、`favorability_events`、
+`state` 以及两张 FTS5 索引表。排行榜卡片的缓存图与头像在 `cache/` 子目录下。
 
 排行榜卡片为 1280 宽双列布局，含金/银/铜名次徽章、圆形头像、进度条与阶段标签；
-分数配色遵循中文习惯的「涨红跌绿」——正分红、负分绿、零分灰。
+阶段配色遵循中文习惯的「涨红跌绿」——正面阶段红、负面阶段绿、中立灰。
+进度条反映的是「阶段 + 阶段内证据进度」，不是裸分数。
+
+## 记忆分层
+
+| 层 | 载体 | 生命周期 | 注入方式 |
+|---|---|---|---|
+| L0 短期 | 最近 N 条原始对话（滑动窗口） | 每轮重建，不落库 | `[最近对话]`，按条数截断 |
+| L1 中期 | `digests` 滚动摘要 | 每次整合滚动写入 | `[近期梗概]` |
+| L2 事实 | `facts` 结构化 KV | 幂等 upsert，长期持久 | `[关键事实]`，按用户 + 关键词取用 |
+| L3 长期 | `memories` 语义/情景/偏好/承诺 | 长期持久，可归档 | `[长期记忆]`，FTS 检索 + 关系门槛门控 |
+| L4 画像 | `user_profiles` + `soul_states` | 长期持久 | `[用户画像]` / `[灵魂状态]` |
+
+每层按 `PROMPT_BUDGET_*` 权重分配 `PROMPT_MAX_CHARS` 的字符预算，超出预算的部分会被截断并标注
+`…（本层内容已按预算截断）`。开启 `RESPECT_UPSTREAM_MEMORY` 时，检测到 NekroAgent 自带记忆系统
+（`MEMORY_ENABLE_SYSTEM`）在运行会把本插件总预算压缩到 60%，避免两套记忆互相挤占上下文。
 
 ## 主要配置
 
 - `ENABLE_AUTO_RECALL`：将相关历史证据注入提示词。
 - `AUTO_RECALL_LIMIT`：灵魂状态缩放前的最大自动记忆命中数。
-- `PROMPT_MAX_CHARS`：注入记忆提示词的字符硬限制。
+- `PROMPT_MAX_CHARS`：所有记忆分层的字符总预算（按下面各层权重切分）。
+- `ENABLE_SLIDING_WINDOW` / `SLIDING_WINDOW_MESSAGES` / `SLIDING_WINDOW_MSG_CHARS`：短期滑动窗口。
+- `ENABLE_FACTS` / `FACT_PROMPT_LIMIT` / `FACT_MAX_PER_CONSOLIDATION`：结构化事实层。
+- `ENABLE_DIGEST` / `DIGEST_PROMPT_LIMIT` / `DIGEST_MAX_CHARS`：滚动摘要层。
+- `PROMPT_BUDGET_WINDOW` / `_FACTS` / `_MEMORIES` / `_DIGEST` / `_RELATION` / `_SOUL`：各层预算权重。
+- `RESPECT_UPSTREAM_MEMORY`：上游记忆系统开启时自动压缩本插件预算。
 - `ENABLE_AUTO_CONSOLIDATION`：使用 LLM 定期提取持久记忆。
 - `CONSOLIDATE_EVERY_USER_MESSAGES`：整合触发的用户消息间隔。
 - `CONSOLIDATION_MODEL_GROUP`：可选模型组；留空使用频道模型组。
 - `ENABLE_HEURISTIC_REMEMBER`：记住中文"记住这个"等明确要求。
 - `ENABLE_USER_PROFILE`：维护每频道用户画像。
 - `ENABLE_SOUL_STATE`：启用回忆和表达倾向状态。
-- `ENABLE_FAVORABILITY`：启用好感度关系层。
-- `ENABLE_FAVOR_GATING`：好感度门槛门控记忆（记忆上的 `min_favor` 生效）。
-- `FAVOR_MAX_ABS_SCORE`：好感度绝对值上限（默认 ±100）。
-- `FAVOR_MAX_SINGLE_DELTA` / `FAVOR_MIN_INTERVAL_MINUTES` / `FAVOR_MAX_DAILY_GAIN` / `FAVOR_MAX_DAILY_LOSS`：防刷分约束。
-- `FAVOR_MARGINAL_DECAY` / `FAVOR_REQUIRE_CONCRETE_REASON`：边际递减与「理由必须具体」。
-- `FAVOR_DECAY_*` / `FAVOR_RECOVER_*`：长时间不互动的降温与负分回升。
-- `FAVOR_RANK_CARD_ENABLED` / `FAVOR_RANK_LIMIT` / `FAVOR_RANK_CARD_FONT` / `FAVOR_RANK_AVATAR`：排行榜卡片。
+- `ENABLE_FAVORABILITY`：启用关系状态机。
+- `ENABLE_FAVOR_GATING`：关系门槛门控记忆（记忆上的 `min_favor` 生效）。
+- `FAVOR_DEFAULT_STAGE`：新档案默认阶段（默认「中立」）。
+- `FAVOR_EXPOSE_NUMBERS`：是否把内部证据权重/展示分写进提示词（默认关闭）。
+- `FAVOR_MIN_INTERVAL_MINUTES` / `FAVOR_MAX_EVENTS_PER_DAY` / `FAVOR_MAX_POSITIVE_PER_DAY` / `FAVOR_MAX_NEGATIVE_PER_DAY`：事件频率与每日上限。
+- `FAVOR_REPEAT_DECAY` / `FAVOR_STAGE_MIN_KINDS`：同类型事件边际递减、升级所需事件种类数。
+- `FAVOR_EVIDENCE_HALF_LIFE_HOURS` / `FAVOR_ERODE_INTERVAL_HOURS`：证据半衰期与衰减结算间隔。
+- `FAVOR_REQUIRE_CONCRETE_EVIDENCE`：证据必须是具体行为（只有氛围词时不予记录）。
+- `FAVOR_MAX_ABS_SCORE`：展示分绝对值上限（仅用于排序展示，不是权威状态）。
+- `FAVOR_MAX_EVENT_HISTORY` / `FAVOR_PROMPT_EVENT_LIMIT` / `FAVOR_GROUP_OVERVIEW_LIMIT` / `FAVOR_MAX_TAGS`：事件流水保留条数、提示词中展示的最近事件数、无触发用户时的关系摘要数、关系标签上限。
+- `FAVOR_RANK_CARD_ENABLED` / `FAVOR_RANK_LIMIT` / `FAVOR_RANK_HIDE_EMPTY` / `FAVOR_RANK_CARD_FONT` / `FAVOR_RANK_AVATAR`：排行榜卡片。
 - `WEBUI_ACCESS_KEY`：好感度管理页的免登录访问密钥（留空则只能用 NekroAgent 管理员身份访问）。
-- `CLEAR_MEMORY_ON_CHANNEL_RESET`：开启后，在面板重置频道会同时清除该频道的全部记忆、笔记、画像、灵魂状态与好感度（默认关闭，长期记忆跨频道重置保留）。
+- `CLEAR_MEMORY_ON_CHANNEL_RESET`：开启后，在面板重置频道会同时清除该频道的全部记忆、笔记、画像、事实、摘要、灵魂状态与关系档案（默认关闭，长期记忆跨频道重置保留）。
 
-如果同时启用了 NekroAgent 内置记忆系统，两个系统可能会注入重叠的上下文。
-建议禁用其中一个或减少回忆数量限制以避免提示词重复。
+如果同时启用了 NekroAgent 内置记忆系统（`MEMORY_ENABLE_SYSTEM`），两个系统会注入重叠的上下文。
+本插件默认开启 `RESPECT_UPSTREAM_MEMORY`：检测到上游记忆系统在跑时自动把自身注入预算压缩到 60%。
+如果仍然觉得提示词冗余，可以进一步调低 `PROMPT_BUDGET_*` 权重、减少 `AUTO_RECALL_LIMIT`，
+或直接关闭其中一个系统。
 
 ## 管理 API
 
@@ -99,65 +128,86 @@ NekroAgent 将认证插件路由挂载在：
 
 好感度相关端点（管理员会话，或在配置了 `WEBUI_ACCESS_KEY` 后带 `?key=xxx`）：
 
-- `GET /favor?chat_key=...`：列出该频道的好感度档案（含阶段）
-- `GET /favor/events?chat_key=...&user_id=...`：查看某用户的变动记录
-- `POST /favor`：新增/调整档案（`score` 直接重设，或 `delta` 增量调整）
-- `DELETE /favor?chat_key=...&user_id=...`：删除档案
-- `POST /favor/decay`、`POST /favor/recover`：手动结算衰减 / 回升
+- `GET /favor?chat_key=...`：列出该频道的关系档案（含阶段、阶段内证据、事件数）
+- `GET /favor/events?chat_key=...&user_id=...`：查看某用户的关系事件流水
+- `POST /favor`：`{"stage": "亲近"}` 人工设定阶段；或 `{"kind": "help", "evidence": "...", "severity": 2}` 记录关系事件
+- `DELETE /favor?chat_key=...&user_id=...`：删除档案与事件历史
+- `POST /favor/erode`：手动结算证据衰减与长期无互动回落（`/favor/decay`、`/favor/recover` 为兼容别名）
+- `GET /facts?chat_key=...&user_id=...&query=...` / `DELETE /facts?chat_key=...&fact_id=...`：结构化事实
 - `GET /favor/card?chat_key=...`：直接返回排行榜卡片 PNG
-- `GET /ui`：好感度管理页（浏览器打开即可改分、删档、看卡片）
+- `GET /ui`：关系管理页（浏览器打开即可设定阶段、记录事件、删档、看卡片）
 
-## 好感度与解锁门控
+## 关系状态机
 
-好感度是「长期关系」而不是当前情绪，按 **频道 + 用户** 维度维护。
+关系是「长期阶段」而不是当前情绪，按 **频道 + 用户** 维度维护。权威状态是
+**阶段 + 阶段内证据累积**，`score` 只是从二者投影出来的展示值（用于排行榜排序与记忆门槛）。
 
-### 阶段
+### 事件驱动
 
-| 分数区间 | 阶段 | 互动指引 |
-|---|---|---|
-| ≤ -60 | 排斥 | 保持距离，谨慎回应，必要时明确边界。 |
-| -60 ~ -20 | 保留 | 维持礼貌但克制，先观察，不要过度投入。 |
-| -20 ~ 20 | 中立 | 正常友好互动，不主动施加亲密语气。 |
-| 20 ~ 60 | 亲近 | 可以更自然、更积极地回应，适度体现熟悉感。 |
-| 60 ~ 85 | 偏爱 | 可明显更热情，主动照顾对方体验并记住其偏好。 |
-| ≥ 85 | 特别亲密 | 可使用显著亲密与偏爱语气，但仍需遵守角色边界。 |
+一切变化都来自**关系事件**：事件有类型、极性、严重度和具体证据。
+
+| 方向 | 事件类型 |
+|---|---|
+| 正向 | `help` 主动帮忙 · `insight` 有价值观点 · `support` 情绪支持 · `shared_interest` 共同兴趣 · `gift` 赠予分享 · `promise_kept` 守信 · `deep_talk` 深入交流 · `banter` 有趣互动 · `reconcile` 和解 · `loyalty` 维护站台 |
+| 负向 | `disrespect` 冒犯贬低 · `promise_broken` 失信 · `harassment` 骚扰越界 · `betrayal` 背叛伤害 · `spam` 刷屏滥用 · `deception` 欺骗隐瞒 · `neglect` 冷落无视 · `boundary_push` 试探边界 |
+
+单次事件权重 = 类型基准权重 × 严重度系数（轻微 0.6 / 明显 1.0 / 严重 1.8），
+同一阶段内同类型事件重复出现时按 `1/(1+0.5n)` 边际递减。
+
+### 阶段与跃迁条件
+
+| 阶段 | 展示分区间 | 升级所需净正向证据 | 降级所需净负向证据 | 最短停留 | 无互动回落 |
+|---|---|---|---|---|---|
+| 排斥 | ≤ -60 | 6.0 | — | 12h | — |
+| 保留 | -60 ~ -20 | 4.0 | 3.0 | 8h | 30 天 |
+| 中立 | -20 ~ 20 | 4.0 | 3.0 | 4h | 60 天 |
+| 亲近 | 20 ~ 60 | 8.0 | 4.0 | 8h | 90 天 |
+| 偏爱 | 60 ~ 85 | 12.0 | 6.0 | 12h | 120 天 |
+| 特别亲密 | ≥ 85 | — | 8.0 | 24h | 180 天 |
+
+跃迁需要**同时**满足：净证据权重达阈值 **+** 出现至少 `FAVOR_STAGE_MIN_KINDS` 种不同类型的事件
+**+** 已在当前阶段停留超过最短时间（滞后防抖）。跃迁成功后阶段内证据清零，富余部分结转。
+
+### 时间的作用
+
+- **证据衰减**：阶段内证据按 `FAVOR_EVIDENCE_HALF_LIFE_HOURS`（默认 72h）半衰期衰减，衰减的是证据权重而非分数。
+- **无互动回落**：超过阶段对应的 `idle_demote_hours` 没有有效互动时，关系自然回落一级，并写入 `idle_demote` 事件。
 
 ### 记忆门槛（min_favor）
 
-每条记忆可以带 `min_favor`：`0=公开 / 20=亲近 / 60=偏爱`。
-发言人好感度没到门槛时，这条记忆**不会**进正文，只会以标题形式出现在「#暂时不想细说的事」里，
-让角色可以自然带过而不是生硬拒绝。关闭 `ENABLE_FAVOR_GATING` 即恢复为无条件注入。
+每条记忆可以带 `min_favor`：`0=公开 / 20=亲近 / 60=偏爱`。门槛现在按**阶段**判定：
+`min_favor < 20` 对所有阶段开放，`20~59` 需要「亲近」及以上，`≥60` 需要「偏爱」及以上。
+关系没到门槛时，这条记忆**不会**进正文，只会以标题形式出现在「#暂时不想细说的事」里。
+关闭 `ENABLE_FAVOR_GATING` 即恢复为无条件注入。
 
-### 防刷分约束
+### 防刷分
 
-单次调整上限、同一用户最小调整间隔、每日净加/净扣上限、边际递减（≥60 折半、≥85 折至 30%），
-以及「理由必须是具体行为」——只有氛围词（喜欢/开心/不错…）时不予加分。
-被拦下时工具会返回明确原因，不会静默生效。
+最小事件间隔、每日事件总数/正向数/负向数上限、同类型边际递减、升级需要多种类事件，
+以及「证据必须是具体行为」——只有氛围词（聊得不错/感觉很好…）时不予记录。被拦下时会返回明确原因。
 
 ### LLM 工具
 
 | 工具 | 类型 | 作用 |
 |---|---|---|
-| `调整好感度` | BEHAVIOR | 按具体行为增减关系分并记录证据（受全部约束层限制） |
-| `重设好感度档案` | BEHAVIOR | 直接重写档案（初始化 / 大幅修正），不动其他档案 |
-| `删除好感度档案` | BEHAVIOR | 删除某用户档案 |
-| `查看好感度档案` | AGENT | 查看某用户的完整档案 |
-| `列出好感度档案` | AGENT | 列出本频道档案摘要 |
-| `结算好感度衰减` | AGENT | 手动跑一次降温结算 |
-| `结算好感度回升` | AGENT | 手动跑一次负分回升 |
+| `记录关系事件` | BEHAVIOR | 记录一次关系事件，由状态机决定是否跃迁（改变关系的唯一正规入口） |
+| `重设关系阶段` | BEHAVIOR | 人工直接设定阶段（覆盖状态机，清空阶段内证据） |
+| `删除关系档案` | BEHAVIOR | 删除某用户档案与事件历史 |
+| `查看关系档案` | AGENT | 查看某用户的阶段、阶段内证据与最近事件 |
+| `列出关系档案` | AGENT | 列出本频道档案摘要 |
+| `结算关系衰减` | AGENT | 手动跑一次证据衰减与回落结算 |
+| `记住事实` / `查看事实` / `删除事实` | BEHAVIOR/AGENT | 结构化事实的增删查 |
 
-`angel_remember` 新增 `min_favor` 参数；`angel_recall` 会自动按当前发言人的好感度门控结果。
+`angel_remember` 支持 `min_favor` 参数；`angel_recall` 会自动按当前发言人的关系阶段门控结果。
 
 ### 群聊命令
 
 | 命令 | 别名 | 权限 | 说明 |
 |---|---|---|---|
-| `查看好感度` | 好感度排行 / 好感榜 / favor_rank | 用户 | 本频道好感度排行榜（图片，失败回退文本） |
-| `好感度档案` | favor_status / fvs | 用户 | 查看自己（或指定用户）的档案 |
-| `好感度加分` | favor_add | 超管 | `好感度加分 <用户ID> <分值>` |
-| `好感度扣分` | favor_sub | 超管 | `好感度扣分 <用户ID> <分值>` |
-| `好感度设定` | favor_set | 超管 | `好感度设定 <用户ID> <分数>` |
-| `好感度删除` | favor_remove | 超管 | `好感度删除 <用户ID>` |
+| `查看好感度` | 好感度排行 / 好感榜 / fav_rank / favor_rank | 用户 | 本频道关系阶段排行榜（图片，失败回退文本） |
+| `好感度档案` | 关系档案 / fav_status / favor_status / fvs | 用户 | 查看自己（或指定用户）的档案 |
+| `好感度事件` | 关系事件 / fav_event | 超管 | `好感度事件 <用户ID> <事件类型> <具体证据> [严重度1-3]` |
+| `好感度设定` | 关系设定 / fav_set / favor_set | 超管 | `好感度设定 <用户ID> <阶段>` |
+| `好感度删除` | 关系删除 / fav_remove / favor_remove | 超管 | `好感度删除 <用户ID>` |
 
 排行榜卡片依赖 Pillow 与可用的中文字体；缺少任一时自动回退纯文本，不影响其他功能。
 `FAVOR_RANK_CARD_FONT` 可显式指定中文字体路径，留空则自动探测（Noto Sans CJK / 微软雅黑 / 苹方）。
