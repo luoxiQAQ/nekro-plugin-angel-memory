@@ -7,10 +7,12 @@ import re
 from pathlib import Path
 from typing import Annotated, Any
 
+from nekro_agent.api import message as message_api
 from nekro_agent.api.plugin import CmdCtl, CommandResponse
 from nekro_agent.core.logger import get_sub_logger
 from nekro_agent.schemas.agent_ctx import AgentCtx
 from nekro_agent.schemas.chat_message import ChatMessage
+from nekro_agent.schemas.signal import MsgSignal
 from nekro_agent.services.command.base import CommandPermission
 from nekro_agent.services.command.schemas import (
     Arg,
@@ -117,10 +119,31 @@ async def inject_memory_prompt(_ctx: AgentCtx) -> str:
 
 
 @plugin.mount_on_user_message()
-async def on_user_message(_ctx: AgentCtx, message: ChatMessage):
+async def on_user_message(_ctx: AgentCtx, message: ChatMessage) -> MsgSignal | None:
     chat_key = message.chat_key
     user_id = str(message.platform_userid or message.sender_id or "")
     content = message.content_text.strip()
+
+    # 无前缀关键词触发排行榜。
+    # Nekro 的命令系统强制要求 COMMAND_PREFIX（本部署为 /），不带前缀的文本压根不会进入
+    # 命令系统（BaseAdapter.detect_command 第一行就 return None），表现为「发了没反应」。
+    # 这里用精确等值匹配兜底（不做包含匹配，避免误触发），命中后自己把卡片发出去，
+    # 并返回 BLOCK_TRIGGER 阻止这条消息再唤醒 AI。
+    # 带前缀的 /查看好感度 会在 collector 里被命令系统提前消费掉，不会走到这里，因此不会重复触发。
+    if (
+        config.ENABLE_FAVORABILITY
+        and config.FAVOR_RANK_KEYWORD_ENABLED
+        and user_id
+        and user_id != "-1"
+        and content in _rank_keywords()
+    ):
+        logger.info(f"无前缀关键词触发好感度排行榜: [{chat_key}] {message.sender_nickname or user_id}: {content}")
+        try:
+            await send_favor_rank(chat_key, _ctx)
+        except Exception:
+            logger.exception(f"无前缀关键词发送好感度排行榜失败: {chat_key}")
+        return MsgSignal.BLOCK_TRIGGER
+
     if config.ENABLE_SOUL_STATE and content:
         deltas = {
             "recall_depth": 0.04
@@ -373,6 +396,12 @@ async def angel_note_create(
 
 FAVOR_DISABLED_HINT = "好感度功能当前已关闭。"
 
+FAVOR_RANK_EMPTY_HINT = (
+    "当前频道还没有建立任何关系档案。\n"
+    "关系档案由「关系事件」驱动建立：等对话里出现过值得记录的互动，"
+    "或由管理员用 /好感度事件 手动记录后，这里就会有内容。"
+)
+
 
 def _resolve_favor_user(_ctx: AgentCtx, target_user_id: str) -> str:
     cleaned = str(target_user_id or "").strip()
@@ -461,6 +490,49 @@ async def build_rank_card(chat_key: str, profiles: list[Any]) -> Path | None:
         max_abs=int(config.FAVOR_MAX_ABS_SCORE),
         font_override=str(config.FAVOR_RANK_CARD_FONT or ""),
     )
+
+
+def _rank_keywords() -> set[str]:
+    """解析无前缀触发关键词（逗号 / 空格 / 顿号分隔）。"""
+    raw = str(getattr(config, "FAVOR_RANK_KEYWORDS", "") or "")
+    return {item.strip() for item in re.split(r"[,，、\s]+", raw) if item.strip()}
+
+
+async def load_rank_profiles(chat_key: str) -> list[Any]:
+    """按配置读取频道排行榜档案。"""
+    return await asyncio.to_thread(
+        storage.list_favors,
+        chat_key=chat_key,
+        limit=int(config.FAVOR_RANK_LIMIT),
+        hide_empty=bool(config.FAVOR_RANK_HIDE_EMPTY),
+    )
+
+
+async def send_favor_rank(chat_key: str, _ctx: AgentCtx) -> bool:
+    """把排行榜直接发到频道（命令与无前缀关键词两条入口共用）。
+
+    Nekro 的命令系统强制要求命令前缀，不带前缀的「查看好感度」不会进命令系统，
+    因此关键词入口必须自己把结果发出去。返回 True 表示已发送（含空态提示）。
+    """
+    if not config.ENABLE_FAVORABILITY:
+        await message_api.send_text(chat_key, FAVOR_DISABLED_HINT, _ctx, record=False)
+        return True
+    profiles = await load_rank_profiles(chat_key)
+    if not profiles:
+        await message_api.send_text(chat_key, FAVOR_RANK_EMPTY_HINT, _ctx, record=False)
+        return True
+    card_path = await build_rank_card(chat_key, profiles)
+    if card_path is None:
+        await message_api.send_text(chat_key, _render_rank_text(profiles), _ctx, record=False)
+        return True
+    await message_api.send_text(
+        chat_key,
+        f"本频道好感度排行榜（共 {len(profiles)} 人）",
+        _ctx,
+        record=False,
+    )
+    await message_api.send_image(chat_key, str(card_path), _ctx, record=False)
+    return True
 
 
 @plugin.mount_sandbox_method(
@@ -828,14 +900,9 @@ async def run_favorability_erosion(_ctx: AgentCtx) -> str:
 async def favor_rank_command(context: CommandExecutionContext) -> CommandResponse:
     if not config.ENABLE_FAVORABILITY:
         return CmdCtl.failed(FAVOR_DISABLED_HINT)
-    profiles = await asyncio.to_thread(
-        storage.list_favors,
-        chat_key=context.chat_key,
-        limit=int(config.FAVOR_RANK_LIMIT),
-        hide_empty=bool(config.FAVOR_RANK_HIDE_EMPTY),
-    )
+    profiles = await load_rank_profiles(context.chat_key)
     if not profiles:
-        return CmdCtl.failed("当前会话还没有建立任何好感度档案。")
+        return CmdCtl.failed(FAVOR_RANK_EMPTY_HINT)
     card_path = await build_rank_card(context.chat_key, profiles)
     if card_path is None:
         return CmdCtl.success(
