@@ -48,6 +48,9 @@ SQLite 数据库为该目录下的 `angel_memory.sqlite3`，包含 `memories`、
 `soul_states`、`favorability`、`favorability_events`、`state` 以及两张 FTS5 索引表。
 排行榜卡片的缓存图与头像在 `cache/` 子目录下。
 
+排行榜卡片为 1280 宽双列布局，含金/银/铜名次徽章、圆形头像、进度条与阶段标签；
+分数配色遵循中文习惯的「涨红跌绿」——正分红、负分绿、零分灰。
+
 ## 主要配置
 
 - `ENABLE_AUTO_RECALL`：将相关历史证据注入提示词。
