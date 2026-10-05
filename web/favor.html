@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>天使记忆 · 好感度管理</title>
+<style>
+  :root {
+    --bg: #f7f4ef;
+    --panel: #ffffff;
+    --border: #e8e1d8;
+    --text: #3c3630;
+    --sub: #8d867e;
+    --red: #e34c4c;
+    --red-soft: #fdeeea;
+    --accent: #d97757;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+  h1::before { content: ""; width: 6px; height: 20px; border-radius: 3px; background: var(--red); }
+  .muted { color: var(--sub); font-size: 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px 0; }
+  input[type=text] {
+    flex: 1 1 320px; min-width: 220px; padding: 9px 12px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+    color: var(--text); font-size: 13px;
+  }
+  button {
+    padding: 9px 14px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); cursor: pointer; font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { opacity: .9; color: #fff; }
+  button.danger:hover { border-color: var(--red); color: var(--red); }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+  .stats { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 12px; }
+  .stats div { font-size: 12px; color: var(--sub); }
+  .stats b { display: block; font-size: 18px; color: var(--text); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid #f1ece5; vertical-align: middle; }
+  th { font-size: 12px; color: var(--sub); font-weight: 500; }
+  td.score { font-weight: 600; color: var(--red); }
+  .tag {
+    display: inline-block; margin: 1px 4px 1px 0; padding: 1px 8px; border-radius: 9px;
+    background: var(--red-soft); color: var(--accent); font-size: 11px;
+  }
+  .stage { font-size: 12px; color: var(--sub); }
+  img#card { max-width: 100%; border-radius: 12px; border: 1px solid var(--border); display: none; }
+  .empty { color: var(--sub); padding: 20px 0; text-align: center; }
+  #toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    background: #3c3630; color: #fff; padding: 9px 16px; border-radius: 10px;
+    font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <h1>天使记忆 · 好感度管理</h1>
+  <div class="muted" id="hint">按频道（chat_key）浏览和维护好感度档案。</div>
+
+  <div class="bar">
+    <input type="text" id="chatKey" placeholder="chat_key，例如 onebot_v11-3692682071:group_1050507404" />
+    <button class="primary" id="loadBtn">载入</button>
+    <button id="cardBtn">生成排行榜卡片</button>
+    <button id="decayBtn">衰减结算</button>
+    <button id="recoverBtn">回升结算</button>
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <div class="stats">
+        <div>档案总数<b id="statTotal">-</b></div>
+        <div>正分档案<b id="statPositive">-</b></div>
+        <div>负分档案<b id="statNegative">-</b></div>
+        <div>分数上限<b id="statMax">-</b></div>
+      </div>
+      <div id="tableWrap"><div class="empty">先填 chat_key 再点「载入」</div></div>
+    </div>
+    <div class="panel">
+      <div class="muted" style="margin-bottom:10px">排行榜卡片预览</div>
+      <img id="card" alt="好感度排行榜卡片" />
+      <div class="empty" id="cardEmpty">点「生成排行榜卡片」查看效果</div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+<script>
+const BASE = location.pathname.replace(/\/[^/]*$/, '');
+const PARAMS = new URLSearchParams(location.search);
+const KEY = PARAMS.get('key') || '';
+const TOKEN = PARAMS.get('token') || '';
+
+function withAuth(query) {
+  const p = new URLSearchParams(query || {});
+  if (KEY) p.set('key', KEY);
+  if (TOKEN) p.set('token', TOKEN);
+  return p.toString();
+}
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+async function api(path, options) {
+  const url = BASE + path + (path.includes('?') ? '&' : '?') + withAuth();
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+function esc(text) {
+  return String(text == null ? '' : text).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+async function load() {
+  const chatKey = document.getElementById('chatKey').value.trim();
+  if (!chatKey) { toast('请先填写 chat_key'); return; }
+  const wrap = document.getElementById('tableWrap');
+  wrap.innerHTML = '<div class="empty">载入中…</div>';
+  try {
+    const data = await api('/favor?' + withAuth({ chat_key: chatKey, hide_empty: 'false' }));
+    const items = data.items || [];
+    document.getElementById('statTotal').textContent = items.length;
+    document.getElementById('statPositive').textContent = items.filter(i => i.score > 0).length;
+    document.getElementById('statNegative').textContent = items.filter(i => i.score < 0).length;
+    document.getElementById('statMax').textContent = data.max_abs_score;
+    if (!items.length) {
+      wrap.innerHTML = '<div class="empty">当前会话还没有建立任何好感度档案。</div>';
+      return;
+    }
+    const rows = items.map((item, index) => {
+      const tags = (item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+      return `<tr>
+        <td>${index + 1}</td>
+        <td>${esc(item.display_name || item.user_id)}<div class="muted">${esc(item.user_id)}</div></td>
+        <td class="score">${item.score > 0 ? '+' : ''}${item.score}</td>
+        <td><span class="stage">${esc(item.stage)}</span></td>
+        <td>${tags || '<span class="muted">—</span>'}</td>
+        <td class="muted">${esc(item.last_reason || '—')}</td>
+        <td>
+          <button data-act="set" data-uid="${esc(item.user_id)}">改分</button>
+          <button class="danger" data-act="del" data-uid="${esc(item.user_id)}">删除</button>
+        </td>
+      </tr>`;
+    }).join('');
+    wrap.innerHTML = `<table><thead><tr>
+      <th>#</th><th>用户</th><th>好感度</th><th>阶段</th><th>标签</th><th>最近变动</th><th>操作</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+    wrap.querySelectorAll('button[data-act]').forEach(btn => {
+      btn.addEventListener('click', () => handleRow(btn.dataset.act, btn.dataset.uid, chatKey));
+    });
+  } catch (error) {
+    wrap.innerHTML = `<div class="empty">载入失败：${esc(error.message)}</div>`;
+  }
+}
+
+async function handleRow(act, userId, chatKey) {
+  try {
+    if (act === 'set') {
+      const raw = prompt(`把 ${userId} 的好感度设为（-100 ~ 100）：`, '0');
+      if (raw === null) return;
+      const score = parseInt(raw, 10);
+      if (Number.isNaN(score)) { toast('请输入整数'); return; }
+      await api('/favor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_key: chatKey, user_id: userId, score, reason: 'WebUI 手动重设好感度' }),
+      });
+      toast('已更新');
+    } else if (act === 'del') {
+      if (!confirm(`确认删除 ${userId} 的好感度档案？`)) return;
+      await api('/favor?' + withAuth({ chat_key: chatKey, user_id: userId }), { method: 'DELETE' });
+      toast('已删除');
+    }
+    load();
+  } catch (error) {
+    toast('操作失败：' + error.message);
+  }
+}
+
+async function renderCard() {
+  const chatKey = document.getElementById('chatKey').value.trim();
+  if (!chatKey) { toast('请先填写 chat_key'); return; }
+  const img = document.getElementById('card');
+  const empty = document.getElementById('cardEmpty');
+  try {
+    const res = await fetch(BASE + '/favor/card?' + withAuth({ chat_key: chatKey, limit: '20' }));
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch (e) {}
+      throw new Error(detail);
+    }
+    const blob = await res.blob();
+    img.src = URL.createObjectURL(blob);
+    img.style.display = 'block';
+    empty.style.display = 'none';
+  } catch (error) {
+    img.style.display = 'none';
+    empty.style.display = 'block';
+    empty.textContent = '生成失败：' + error.message;
+  }
+}
+
+async function settle(kind) {
+  try {
+    const data = await api('/favor/' + kind, { method: 'POST' });
+    toast(`结算完成，影响 ${data.changed} 个档案`);
+    load();
+  } catch (error) {
+    toast('结算失败：' + error.message);
+  }
+}
+
+document.getElementById('loadBtn').addEventListener('click', load);
+document.getElementById('cardBtn').addEventListener('click', renderCard);
+document.getElementById('decayBtn').addEventListener('click', () => settle('decay'));
+document.getElementById('recoverBtn').addEventListener('click', () => settle('recover'));
+document.getElementById('chatKey').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+
+if (!KEY && !TOKEN) {
+  document.getElementById('hint').textContent =
+    '提示：未检测到访问凭据。请通过 NekroAgent 管理员身份打开，或带上 ?key=<WEBUI_ACCESS_KEY>。';
+}
+</script>
+</body>
+</html>
