@@ -10,7 +10,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
-from .models import MemoryRecord, NoteRecord, SoulState
+from .favorability import decay_delta, recover_delta
+from .models import FavorProfile, MemoryRecord, NoteRecord, SoulState
 
 ASCII_PATTERN = re.compile(r'[a-zA-Z0-9_-]{2,}')
 CJK_PATTERN = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff]+')
@@ -106,8 +107,25 @@ class AngelMemoryStorage:
                 CREATE TABLE IF NOT EXISTS state (
                     state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL, updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS favorability (
+                    chat_key TEXT NOT NULL, user_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '',
+                    score INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL DEFAULT '',
+                    interaction_hint TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',
+                    last_reason TEXT NOT NULL DEFAULT '', last_adjust_at REAL NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL, last_interaction_at REAL NOT NULL,
+                    PRIMARY KEY(chat_key, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_favor_scope ON favorability(chat_key, score DESC);
+                CREATE TABLE IF NOT EXISTS favorability_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, chat_key TEXT NOT NULL, user_id TEXT NOT NULL,
+                    delta INTEGER NOT NULL, reason TEXT NOT NULL, score_after INTEGER NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_favor_events
+                    ON favorability_events(chat_key, user_id, created_at DESC);
                 """
             )
+            self._migrate_schema(connection)
             try:
                 connection.executescript(
                     """
@@ -121,6 +139,15 @@ class AngelMemoryStorage:
                 self._set_state(connection, "fts_available", "0")
             else:
                 self._set_state(connection, "fts_available", "1")
+
+    @staticmethod
+    def _migrate_schema(connection: sqlite3.Connection) -> None:
+        """老库平滑升级：补上后加的列，不动既有数据。"""
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(memories)")}
+        if "min_favor" not in columns:
+            connection.execute(
+                "ALTER TABLE memories ADD COLUMN min_favor INTEGER NOT NULL DEFAULT 0"
+            )
 
     @staticmethod
     def _set_state(connection: sqlite3.Connection, key: str, value: str) -> None:
@@ -160,6 +187,7 @@ class AngelMemoryStorage:
         user_id: str = "",
         source: str = "manual",
         created_at: float | None = None,
+        min_favor: int = 0,
     ) -> MemoryRecord:
         content = str(content).strip()
         if not content:
@@ -174,13 +202,13 @@ class AngelMemoryStorage:
                 """
                 INSERT INTO memories(
                     id,short_id,chat_key,user_id,memory_type,content,summary,tags_json,
-                    importance,confidence,source,created_at,updated_at,last_accessed_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    importance,confidence,source,created_at,updated_at,last_accessed_at,min_favor
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     memory_id, short_id, chat_key, user_id, memory_type, content, str(summary).strip(),
                     json.dumps(tag_list, ensure_ascii=False), clamp(importance), clamp(confidence), source,
-                    timestamp, timestamp, timestamp,
+                    timestamp, timestamp, timestamp, max(0, int(min_favor)),
                 ),
             )
             if self._fts_enabled(connection):
@@ -209,15 +237,18 @@ class AngelMemoryStorage:
                 values["importance"] = clamp(changes["importance"])
             if changes.get("confidence") is not None:
                 values["confidence"] = clamp(changes["confidence"])
+            if changes.get("min_favor") is not None:
+                values["min_favor"] = max(0, int(changes["min_favor"]))
             values["updated_at"] = time.time()
             connection.execute(
                 """
-                UPDATE memories SET content=?,summary=?,tags_json=?,importance=?,confidence=?,status=?,updated_at=?
-                WHERE id=?
+                UPDATE memories SET content=?,summary=?,tags_json=?,importance=?,confidence=?,status=?,
+                    min_favor=?,updated_at=? WHERE id=?
                 """,
                 (
                     values["content"], values["summary"], json.dumps(tags, ensure_ascii=False),
-                    values["importance"], values["confidence"], values["status"], values["updated_at"], values["id"],
+                    values["importance"], values["confidence"], values["status"],
+                    int(values.get("min_favor", 0) or 0), values["updated_at"], values["id"],
                 ),
             )
             if self._fts_enabled(connection):
@@ -252,9 +283,20 @@ class AngelMemoryStorage:
         user_id: str = "",
         limit: int = 6,
         include_shared: bool = True,
+        min_favor_ceiling: int | None = None,
     ) -> list[MemoryRecord]:
+        """检索记忆。
+
+        min_favor_ceiling 非空时，只返回 min_favor <= 该值的记忆（好感度门控）；
+        传 None 表示不做门控，把全部分数段的记忆都取回来由调用方自行分流。
+        """
         limit = max(1, min(int(limit), 50))
         query_match = match_query(query)
+        favor_clause = ""
+        favor_params: list[Any] = []
+        if min_favor_ceiling is not None:
+            favor_clause = " AND m.min_favor<=?"
+            favor_params = [max(-1000000, int(min_favor_ceiling))]
         with self.connect() as connection:
             rows: Sequence[sqlite3.Row] = []
             if query_match and self._fts_enabled(connection):
@@ -263,15 +305,23 @@ class AngelMemoryStorage:
                     rows = connection.execute(
                         f"""
                         SELECT m.* FROM memory_fts JOIN memories m ON m.id=memory_fts.memory_id
-                        WHERE memory_fts MATCH ? AND m.chat_key=? AND m.status='active' AND {scope}
+                        WHERE memory_fts MATCH ? AND m.chat_key=? AND m.status='active' AND {scope}{favor_clause}
                         ORDER BY bm25(memory_fts) ASC,m.importance DESC LIMIT ?
                         """,
-                        (query_match, chat_key, user_id, limit * 3),
+                        (query_match, chat_key, user_id, *favor_params, limit * 3),
                     ).fetchall()
                 except sqlite3.OperationalError:
                     rows = []
             if not rows:
-                rows = self._fallback_search(connection, chat_key, query, user_id, limit * 3, include_shared)
+                rows = self._fallback_search(
+                    connection,
+                    chat_key,
+                    query,
+                    user_id,
+                    limit * 3,
+                    include_shared,
+                    min_favor_ceiling=min_favor_ceiling,
+                )
             now = time.time()
             query_set = set(search_tokens(query))
             scored: list[tuple[float, sqlite3.Row]] = []
@@ -328,6 +378,7 @@ class AngelMemoryStorage:
         user_id: str,
         limit: int,
         include_shared: bool,
+        min_favor_ceiling: int | None = None,
     ) -> Sequence[sqlite3.Row]:
         tokens = search_tokens(query)[:12]
         if not tokens:
@@ -335,12 +386,18 @@ class AngelMemoryStorage:
         scope = "(user_id='' OR user_id=?)" if user_id and include_shared else "user_id=?"
         clauses = " OR ".join("(content LIKE ? OR summary LIKE ? OR tags_json LIKE ?)" for _ in tokens)
         params: list[Any] = [chat_key, user_id]
+        favor_clause = ""
+        if min_favor_ceiling is not None:
+            favor_clause = " AND min_favor<=?"
         for token in tokens:
             value = f"%{token}%"
             params.extend([value, value, value])
+        if min_favor_ceiling is not None:
+            params.append(max(-1000000, int(min_favor_ceiling)))
         params.append(limit)
         return connection.execute(
-            f"SELECT * FROM memories WHERE chat_key=? AND status='active' AND {scope} AND ({clauses}) LIMIT ?",
+            f"SELECT * FROM memories WHERE chat_key=? AND status='active' AND {scope}"
+            f"{favor_clause} AND ({clauses}) LIMIT ?",
             params,
         ).fetchall()
 
@@ -434,7 +491,7 @@ class AngelMemoryStorage:
         chat_key = str(chat_key).strip()
         if not chat_key:
             raise ValueError("chat_key cannot be empty")
-        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0}
+        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0, "favorability": 0}
         with self.connect() as connection:
             if self._fts_enabled(connection):
                 connection.execute(
@@ -449,10 +506,14 @@ class AngelMemoryStorage:
             counts["notes"] = connection.execute("DELETE FROM notes WHERE chat_key=?", (chat_key,)).rowcount
             counts["profiles"] = connection.execute("DELETE FROM user_profiles WHERE chat_key=?", (chat_key,)).rowcount
             counts["soul_states"] = connection.execute("DELETE FROM soul_states WHERE chat_key=?", (chat_key,)).rowcount
+            counts["favorability"] = connection.execute(
+                "DELETE FROM favorability WHERE chat_key=?", (chat_key,)
+            ).rowcount
+            connection.execute("DELETE FROM favorability_events WHERE chat_key=?", (chat_key,))
         return counts
 
     def reset_all(self) -> dict[str, int]:
-        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0}
+        counts = {"memories": 0, "notes": 0, "profiles": 0, "soul_states": 0, "favorability": 0}
         with self.connect() as connection:
             fts_available = self._fts_enabled(connection)
             if fts_available:
@@ -462,6 +523,8 @@ class AngelMemoryStorage:
             counts["notes"] = connection.execute("DELETE FROM notes").rowcount
             counts["profiles"] = connection.execute("DELETE FROM user_profiles").rowcount
             counts["soul_states"] = connection.execute("DELETE FROM soul_states").rowcount
+            counts["favorability"] = connection.execute("DELETE FROM favorability").rowcount
+            connection.execute("DELETE FROM favorability_events")
             connection.execute("DELETE FROM state")
             self._set_state(connection, "fts_available", "1" if fts_available else "0")
         return counts
@@ -610,18 +673,27 @@ class AngelMemoryStorage:
             notes = [dict(row) for row in connection.execute("SELECT * FROM notes ORDER BY created_at")]
             profiles = [dict(row) for row in connection.execute("SELECT * FROM user_profiles ORDER BY updated_at")]
             soul_states = [dict(row) for row in connection.execute("SELECT * FROM soul_states ORDER BY updated_at")]
+            favors = [dict(row) for row in connection.execute("SELECT * FROM favorability ORDER BY score DESC")]
+            favor_events = [
+                dict(row)
+                for row in connection.execute("SELECT * FROM favorability_events ORDER BY id")
+            ]
         for row in memories:
             row["tags"] = json.loads(row.pop("tags_json") or "[]")
         for row in notes:
             row["tags"] = json.loads(row.pop("tags_json") or "[]")
         for row in profiles:
             row["attributes"] = json.loads(row.pop("attributes_json") or "{}")
+        for row in favors:
+            row["tags"] = json.loads(row.pop("tags_json") or "[]")
         return {
-            "version": 1,
+            "version": 2,
             "memories": memories,
             "notes": notes,
             "profiles": profiles,
             "soul_states": soul_states,
+            "favorability": favors,
+            "favorability_events": favor_events,
         }
 
     def import_memories(self, memories: Iterable[dict[str, Any]], *, default_chat_key: str = "") -> dict[str, int]:
@@ -658,8 +730,350 @@ class AngelMemoryStorage:
             imported += 1
         return {"imported": imported, "skipped": skipped}
 
+    # ------------------------------------------------------------ 好感度
+
+    def get_favor(self, *, chat_key: str, user_id: str) -> FavorProfile | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM favorability WHERE chat_key=? AND user_id=?",
+                (chat_key, user_id),
+            ).fetchone()
+        return self.favor_from_row(row) if row else None
+
+    def get_or_create_favor(
+        self,
+        *,
+        chat_key: str,
+        user_id: str,
+        display_name: str = "",
+        default_score: int = 0,
+    ) -> FavorProfile:
+        profile = self.get_favor(chat_key=chat_key, user_id=user_id)
+        if profile is not None:
+            return profile
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO favorability(
+                    chat_key,user_id,display_name,score,summary,interaction_hint,tags_json,
+                    last_reason,last_adjust_at,created_at,updated_at,last_interaction_at
+                ) VALUES(?,?,?,?,'','','[]','',0,?,?,?)
+                """,
+                (chat_key, user_id, str(display_name or "").strip(), int(default_score), now, now, now),
+            )
+        return self.get_favor(chat_key=chat_key, user_id=user_id) or FavorProfile(
+            chat_key=chat_key, user_id=user_id, display_name=str(display_name or "").strip(),
+            score=int(default_score), created_at=now, updated_at=now, last_interaction_at=now,
+        )
+
+    def touch_favor(
+        self,
+        *,
+        chat_key: str,
+        user_id: str,
+        display_name: str = "",
+        now: float | None = None,
+    ) -> None:
+        """只在档案已存在时更新最近互动时间与（空）昵称，不会凭空建档。"""
+        timestamp = float(now or time.time())
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT user_id FROM favorability WHERE chat_key=? AND user_id=?",
+                (chat_key, user_id),
+            ).fetchone()
+            if row is None:
+                return
+            connection.execute(
+                "UPDATE favorability SET last_interaction_at=? WHERE chat_key=? AND user_id=?",
+                (timestamp, chat_key, user_id),
+            )
+            if display_name:
+                connection.execute(
+                    "UPDATE favorability SET display_name=? WHERE chat_key=? AND user_id=? "
+                    "AND (display_name='' OR display_name IS NULL)",
+                    (str(display_name).strip(), chat_key, user_id),
+                )
+
+    def _ensure_favor_row(self, connection: sqlite3.Connection, chat_key: str, user_id: str, now: float) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM favorability WHERE chat_key=? AND user_id=?",
+            (chat_key, user_id),
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                """
+                INSERT INTO favorability(
+                    chat_key,user_id,display_name,score,summary,interaction_hint,tags_json,
+                    last_reason,last_adjust_at,created_at,updated_at,last_interaction_at
+                ) VALUES(?,?,'',0,'','','[]','',0,?,?,?)
+                """,
+                (chat_key, user_id, now, now, now),
+            )
+            row = connection.execute(
+                "SELECT * FROM favorability WHERE chat_key=? AND user_id=?",
+                (chat_key, user_id),
+            ).fetchone()
+        return row
+
+    def _write_favor(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        chat_key: str,
+        user_id: str,
+        score: int,
+        reason: str,
+        summary: str,
+        interaction_hint: str,
+        tags: list[str],
+        display_name: str,
+        delta: int,
+        now: float,
+        max_events: int,
+        count_event: bool = True,
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE favorability SET display_name=?,score=?,summary=?,interaction_hint=?,tags_json=?,
+                last_reason=?,last_adjust_at=?,updated_at=?,last_interaction_at=?
+            WHERE chat_key=? AND user_id=?
+            """,
+            (
+                display_name, int(score), summary, interaction_hint,
+                json.dumps(tags, ensure_ascii=False), str(reason)[:200],
+                now if count_event else 0, now, now, chat_key, user_id,
+            ),
+        )
+        if count_event:
+            connection.execute(
+                "INSERT INTO favorability_events(chat_key,user_id,delta,reason,score_after,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (chat_key, user_id, int(delta), str(reason)[:200], int(score), now),
+            )
+            connection.execute(
+                "DELETE FROM favorability_events WHERE chat_key=? AND user_id=? AND id NOT IN "
+                "(SELECT id FROM favorability_events WHERE chat_key=? AND user_id=? ORDER BY id DESC LIMIT ?)",
+                (chat_key, user_id, chat_key, user_id, max(1, int(max_events))),
+            )
+
+    def apply_favor_delta(
+        self,
+        *,
+        chat_key: str,
+        user_id: str,
+        delta: int,
+        reason: str,
+        display_name: str = "",
+        summary: str = "",
+        interaction_hint: str = "",
+        tags: Iterable[str] | None = None,
+        max_abs: int = 100,
+        max_events: int = 8,
+        now: float | None = None,
+    ) -> FavorProfile:
+        timestamp = float(now or time.time())
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._ensure_favor_row(connection, chat_key, user_id, timestamp)
+            score = max(-int(max_abs), min(int(max_abs), int(row["score"]) + int(delta)))
+            merged_tags = json.loads(row["tags_json"] or "[]")
+            if tags:
+                merged_tags = normalize_tags([*merged_tags, *tags])
+            name = str(display_name or "").strip() or row["display_name"]
+            self._write_favor(
+                connection,
+                chat_key=chat_key,
+                user_id=user_id,
+                score=score,
+                reason=reason,
+                summary=str(summary).strip() if str(summary or "").strip() else row["summary"],
+                interaction_hint=(
+                    str(interaction_hint).strip() if str(interaction_hint or "").strip() else row["interaction_hint"]
+                ),
+                tags=merged_tags,
+                display_name=name,
+                delta=int(delta),
+                now=timestamp,
+                max_events=max_events,
+            )
+            updated = connection.execute(
+                "SELECT * FROM favorability WHERE chat_key=? AND user_id=?",
+                (chat_key, user_id),
+            ).fetchone()
+        return self.favor_from_row(updated)
+
+    def overwrite_favor(
+        self,
+        *,
+        chat_key: str,
+        user_id: str,
+        score: int,
+        reason: str,
+        display_name: str = "",
+        summary: str = "",
+        interaction_hint: str = "",
+        tags: Iterable[str] | None = None,
+        max_abs: int = 100,
+        max_events: int = 8,
+        now: float | None = None,
+    ) -> FavorProfile:
+        timestamp = float(now or time.time())
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._ensure_favor_row(connection, chat_key, user_id, timestamp)
+            new_score = max(-int(max_abs), min(int(max_abs), int(score)))
+            name = str(display_name or "").strip() or row["display_name"]
+            self._write_favor(
+                connection,
+                chat_key=chat_key,
+                user_id=user_id,
+                score=new_score,
+                reason=reason or "手动重设好感度档案",
+                summary=str(summary or "").strip() or row["summary"],
+                interaction_hint=str(interaction_hint or "").strip() or row["interaction_hint"],
+                tags=normalize_tags(tags) if tags is not None else json.loads(row["tags_json"] or "[]"),
+                display_name=name,
+                delta=new_score - int(row["score"]),
+                now=timestamp,
+                max_events=max_events,
+            )
+            updated = connection.execute(
+                "SELECT * FROM favorability WHERE chat_key=? AND user_id=?",
+                (chat_key, user_id),
+            ).fetchone()
+        return self.favor_from_row(updated)
+
+    def delete_favor(self, *, chat_key: str, user_id: str) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT user_id FROM favorability WHERE chat_key=? AND user_id=?",
+                (chat_key, user_id),
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute("DELETE FROM favorability WHERE chat_key=? AND user_id=?", (chat_key, user_id))
+            connection.execute("DELETE FROM favorability_events WHERE chat_key=? AND user_id=?", (chat_key, user_id))
+        return True
+
+    def list_favors(
+        self,
+        *,
+        chat_key: str,
+        limit: int = 20,
+        offset: int = 0,
+        hide_empty: bool = True,
+    ) -> list[FavorProfile]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM favorability WHERE chat_key=? ORDER BY score DESC,updated_at DESC",
+                (chat_key,),
+            ).fetchall()
+        profiles = [self.favor_from_row(row) for row in rows]
+        if hide_empty:
+            profiles = [profile for profile in profiles if not profile.is_empty()]
+        start = max(0, int(offset))
+        size = max(1, min(int(limit), 200))
+        return profiles[start : start + size]
+
+    def count_favors(self, *, chat_key: str, hide_empty: bool = True) -> int:
+        return len(self.list_favors(chat_key=chat_key, limit=200, hide_empty=hide_empty))
+
+    def list_favor_events(self, *, chat_key: str, user_id: str, limit: int = 5) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT delta,reason,score_after,created_at FROM favorability_events "
+                "WHERE chat_key=? AND user_id=? ORDER BY id DESC LIMIT ?",
+                (chat_key, user_id, max(1, min(int(limit), 50))),
+            ).fetchall()
+        return [
+            {
+                "delta": int(row["delta"]),
+                "reason": row["reason"],
+                "score_after": int(row["score_after"]),
+                "created_at": float(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def favor_daily_totals(self, *, chat_key: str, user_id: str, since_ts: float) -> tuple[int, int]:
+        """返回 (今日累计加分, 今日累计扣分绝对值)。"""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT delta FROM favorability_events WHERE chat_key=? AND user_id=? AND created_at>=?",
+                (chat_key, user_id, float(since_ts)),
+            ).fetchall()
+        gain = sum(int(row["delta"]) for row in rows if int(row["delta"]) > 0)
+        loss = sum(-int(row["delta"]) for row in rows if int(row["delta"]) < 0)
+        return gain, loss
+
+    def apply_favor_decay(self, *, interval_hours: int, percent: int, now: float | None = None) -> int:
+        """对「超过 interval_hours 未互动」的正分档案降温，返回受影响条数。"""
+        timestamp = float(now or time.time())
+        cutoff = timestamp - max(1, int(interval_hours)) * 3600
+        changed = 0
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT chat_key,user_id,score FROM favorability WHERE score>0 AND last_interaction_at<=?",
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                step = decay_delta(int(row["score"]), percent)
+                if step <= 0:
+                    continue
+                new_score = max(0, int(row["score"]) - step)
+                connection.execute(
+                    "UPDATE favorability SET score=?,updated_at=? WHERE chat_key=? AND user_id=?",
+                    (new_score, timestamp, row["chat_key"], row["user_id"]),
+                )
+                connection.execute(
+                    "INSERT INTO favorability_events(chat_key,user_id,delta,reason,score_after,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (row["chat_key"], row["user_id"], -step, "长时间未互动，自动降温", new_score, timestamp),
+                )
+                changed += 1
+        return changed
+
+    def apply_favor_recover(self, *, interval_hours: int, percent: int, now: float | None = None) -> int:
+        """对「超过 interval_hours 未互动」的负分档案回升，返回受影响条数。"""
+        timestamp = float(now or time.time())
+        cutoff = timestamp - max(1, int(interval_hours)) * 3600
+        changed = 0
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT chat_key,user_id,score FROM favorability WHERE score<0 AND last_interaction_at<=?",
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                step = recover_delta(int(row["score"]), percent)
+                if step <= 0:
+                    continue
+                new_score = min(0, int(row["score"]) + step)
+                connection.execute(
+                    "UPDATE favorability SET score=?,updated_at=? WHERE chat_key=? AND user_id=?",
+                    (new_score, timestamp, row["chat_key"], row["user_id"]),
+                )
+                connection.execute(
+                    "INSERT INTO favorability_events(chat_key,user_id,delta,reason,score_after,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (row["chat_key"], row["user_id"], step, "长时间未互动，负分回升", new_score, timestamp),
+                )
+                changed += 1
+        return changed
+
+    @staticmethod
+    def favor_from_row(row: sqlite3.Row) -> FavorProfile:
+        return FavorProfile(
+            chat_key=row["chat_key"], user_id=row["user_id"], display_name=row["display_name"],
+            score=int(row["score"]), summary=row["summary"], interaction_hint=row["interaction_hint"],
+            tags=json.loads(row["tags_json"] or "[]"), last_reason=row["last_reason"],
+            last_adjust_at=float(row["last_adjust_at"]), created_at=float(row["created_at"]),
+            updated_at=float(row["updated_at"]), last_interaction_at=float(row["last_interaction_at"]),
+        )
+
     @staticmethod
     def memory_from_row(row: sqlite3.Row) -> MemoryRecord:
+        keys = row.keys()
         return MemoryRecord(
             id=row["id"], short_id=int(row["short_id"]), chat_key=row["chat_key"], user_id=row["user_id"],
             memory_type=row["memory_type"], content=row["content"], summary=row["summary"],
@@ -667,4 +1081,5 @@ class AngelMemoryStorage:
             confidence=float(row["confidence"]), access_count=int(row["access_count"]), status=row["status"],
             source=row["source"], created_at=float(row["created_at"]), updated_at=float(row["updated_at"]),
             last_accessed_at=float(row["last_accessed_at"]),
+            min_favor=int(row["min_favor"]) if "min_favor" in keys else 0,
         )
