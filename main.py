@@ -819,7 +819,7 @@ async def run_favorability_erosion(_ctx: AgentCtx) -> str:
 
 @plugin.mount_command(
     name="查看好感度",
-    aliases=["好感度排行", "好感榜", "fav_rank", "favor_rank"],
+    aliases=["好感榜", "fav_rank", "favor_rank"],
     description="查看本频道的关系阶段排行榜",
     permission=CommandPermission.USER,
     usage="查看好感度",
@@ -854,7 +854,7 @@ async def favor_rank_command(context: CommandExecutionContext) -> CommandRespons
 
 @plugin.mount_command(
     name="好感度档案",
-    aliases=["关系档案", "fav_status", "favor_status", "fvs"],
+    aliases=["关系档案", "fav_status", "档案"],
     description="查看自己（或指定用户）的关系档案与最近事件",
     permission=CommandPermission.USER,
     usage="好感度档案 [用户ID]",
@@ -921,7 +921,7 @@ async def favor_event_command(
 
 @plugin.mount_command(
     name="好感度设定",
-    aliases=["关系设定", "fav_set", "favor_set"],
+    aliases=["关系设定", "fav_set"],
     description="人工直接把指定用户的关系阶段设定为某个值",
     permission=CommandPermission.SUPER_USER,
     usage="好感度设定 <用户ID> <阶段>",
@@ -953,7 +953,7 @@ async def favor_set_command(
 
 @plugin.mount_command(
     name="好感度删除",
-    aliases=["关系删除", "fav_remove", "favor_remove"],
+    aliases=["关系删除", "fav_remove"],
     description="删除指定用户在当前频道中的关系档案与事件历史",
     permission=CommandPermission.SUPER_USER,
     usage="好感度删除 <用户ID>",
