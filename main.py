@@ -124,6 +124,19 @@ async def on_user_message(_ctx: AgentCtx, message: ChatMessage) -> MsgSignal | N
     user_id = str(message.platform_userid or message.sender_id or "")
     content = message.content_text.strip()
 
+    # 关系档案登记：放在最前面，保证「只发关键词」的人也能进榜。
+    # FAVOR_AUTO_ENROLL 打开时首次发言即建档（聊过就进榜）；关闭时退回事件制，只在已建档时刷新互动时间。
+    if config.ENABLE_FAVORABILITY and user_id and user_id != "-1":
+        created = await asyncio.to_thread(
+            storage.touch_favor,
+            chat_key=chat_key,
+            user_id=user_id,
+            display_name=message.sender_nickname or message.sender_name or "",
+            auto_enroll=bool(config.FAVOR_AUTO_ENROLL),
+        )
+        if created:
+            logger.debug(f"新关系档案（聊过就进榜）: [{chat_key}] {message.sender_nickname or user_id}")
+
     # 无前缀关键词触发排行榜。
     # Nekro 的命令系统强制要求 COMMAND_PREFIX（本部署为 /），不带前缀的文本压根不会进入
     # 命令系统（BaseAdapter.detect_command 第一行就 return None），表现为「发了没反应」。
@@ -156,13 +169,6 @@ async def on_user_message(_ctx: AgentCtx, message: ChatMessage) -> MsgSignal | N
             else 0.0,
         }
         await asyncio.to_thread(storage.update_soul_state, chat_key, **deltas)
-    if config.ENABLE_FAVORABILITY and user_id and user_id != "-1":
-        await asyncio.to_thread(
-            storage.touch_favor,
-            chat_key=chat_key,
-            user_id=user_id,
-            display_name=message.sender_nickname or message.sender_name or "",
-        )
     if config.ENABLE_HEURISTIC_REMEMBER and content:
         for pattern in EXPLICIT_MEMORY_PATTERNS:
             match = pattern.match(content)
@@ -396,11 +402,21 @@ async def angel_note_create(
 
 FAVOR_DISABLED_HINT = "好感度功能当前已关闭。"
 
-FAVOR_RANK_EMPTY_HINT = (
+FAVOR_RANK_EMPTY_HINT_EVENT = (
     "当前频道还没有建立任何关系档案。\n"
     "关系档案由「关系事件」驱动建立：等对话里出现过值得记录的互动，"
     "或由管理员用 /好感度事件 手动记录后，这里就会有内容。"
 )
+
+FAVOR_RANK_EMPTY_HINT_ENROLL = (
+    "当前频道还没有任何关系档案——本频道还没有人发过言。\n"
+    "「聊过就进榜」已开启：群友发言会自动建档，等有人说话再试即可。"
+)
+
+
+def _rank_empty_hint() -> str:
+    """空榜单提示：按当前建档模式给出可执行的下一步。"""
+    return FAVOR_RANK_EMPTY_HINT_ENROLL if config.FAVOR_AUTO_ENROLL else FAVOR_RANK_EMPTY_HINT_EVENT
 
 
 def _resolve_favor_user(_ctx: AgentCtx, target_user_id: str) -> str:
@@ -519,7 +535,7 @@ async def send_favor_rank(chat_key: str, _ctx: AgentCtx) -> bool:
         return True
     profiles = await load_rank_profiles(chat_key)
     if not profiles:
-        await message_api.send_text(chat_key, FAVOR_RANK_EMPTY_HINT, _ctx, record=False)
+        await message_api.send_text(chat_key, _rank_empty_hint(), _ctx, record=False)
         return True
     card_path = await build_rank_card(chat_key, profiles)
     if card_path is None:
@@ -902,7 +918,7 @@ async def favor_rank_command(context: CommandExecutionContext) -> CommandRespons
         return CmdCtl.failed(FAVOR_DISABLED_HINT)
     profiles = await load_rank_profiles(context.chat_key)
     if not profiles:
-        return CmdCtl.failed(FAVOR_RANK_EMPTY_HINT)
+        return CmdCtl.failed(_rank_empty_hint())
     card_path = await build_rank_card(context.chat_key, profiles)
     if card_path is None:
         return CmdCtl.success(

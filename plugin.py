@@ -7,7 +7,7 @@ plugin = NekroPlugin(
     name="天使记忆",
     module_name="nekro_memory_angel",
     description="分层长期记忆、滑动窗口短期记忆、结构化事实、回忆、用户画像、灵魂状态与事件驱动关系状态机",
-    version="1.2.1",
+    version="1.3.0",
     author="luoxiQAQ",
     url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
     allow_sleep=False,
@@ -106,6 +106,16 @@ class AngelMemoryConfig(ConfigBase):
         title="新档案默认关系阶段",
         description="可选：排斥 / 保留 / 中立 / 亲近 / 偏爱 / 特别亲密。",
     )
+    FAVOR_AUTO_ENROLL: bool = Field(
+        default=True,
+        title="聊过就进榜（首次发言自动建档）",
+        description=(
+            "开启后，用户在本频道第一次发言就会建一条「中立、零证据」的关系档案，"
+            "排行榜立刻有花名册，不必等关系事件。"
+            "阶段跃迁仍然只由关系事件驱动，所以这不改变状态机语义。"
+            "关闭后回到事件制：只有被记录过关系事件的人才会有档案。"
+        ),
+    )
     FAVOR_MAX_ABS_SCORE: int = Field(
         default=100, ge=10, le=10000, title="展示分绝对值上限",
         description="展示分只是从关系阶段投影出来的排序值，不是权威状态。",
@@ -151,7 +161,13 @@ class AngelMemoryConfig(ConfigBase):
     )
     FAVOR_RANK_LIMIT: int = Field(default=20, ge=1, le=40, title="排行榜最多展示人数")
     FAVOR_RANK_HIDE_EMPTY: bool = Field(
-        default=True, title="排行榜隐藏空档案", description="隐藏既没有事件、也没有任何变动记录的空档案。",
+        default=False,
+        title="排行榜隐藏空档案",
+        description=(
+            "隐藏既没有事件、也没有任何变动记录的空档案。"
+            "默认关闭：配合「聊过就进榜」时，刚建档的人本来就该出现在榜单上。"
+            "若开启 FAVOR_AUTO_ENROLL 又打开本项，自动建档的人会被全部隐藏，榜单会看起来还是空的。"
+        ),
     )
     FAVOR_RANK_CARD_FONT: str = Field(
         default="", title="排行榜卡片中文字体路径", description="留空则自动探测系统字体（Noto Sans CJK / 微软雅黑 / 苹方）。",
