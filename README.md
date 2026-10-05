@@ -141,6 +141,7 @@ make sure your path is valid shared path or upload path
 - `FAVOR_MAX_EVENT_HISTORY` / `FAVOR_PROMPT_EVENT_LIMIT` / `FAVOR_GROUP_OVERVIEW_LIMIT` / `FAVOR_MAX_TAGS`：事件流水保留条数、提示词中展示的最近事件数、无触发用户时的关系摘要数、关系标签上限。
 - `FAVOR_RANK_CARD_ENABLED` / `FAVOR_RANK_LIMIT` / `FAVOR_RANK_HIDE_EMPTY` / `FAVOR_RANK_CARD_FONT` / `FAVOR_RANK_AVATAR`：排行榜卡片。
 - `FAVOR_RANK_KEYWORD_ENABLED` / `FAVOR_RANK_KEYWORDS`：无前缀关键词触发排行榜（默认开，词表 `查看好感度,好感榜`）。
+- `FAVOR_RANK_AI_TRIGGER_ENABLED`：把「查看好感度排行榜」工具交给 AI，让自然语言也能查榜单（默认开）。
 - `WEBUI_ACCESS_KEY`：好感度管理页的免登录访问密钥（留空则只能用 NekroAgent 管理员身份访问）。
 - `CLEAR_MEMORY_ON_CHANNEL_RESET`：开启后，在面板重置频道会同时清除该频道的全部记忆、笔记、画像、事实、摘要、灵魂状态与关系档案（默认关闭，长期记忆跨频道重置保留）。
 
@@ -260,6 +261,12 @@ NekroAgent 将认证插件路由挂载在：
 > ℹ️ 两条入口的**发送通道不同**，所以形态本来就不一样：命令入口的文本会带 `≡NA≡:` 前缀且图文合并为一条，
 > 关键词入口则是插件直发的独立图片消息。为了不让同一个功能看起来像两个东西，关键词入口**只发卡片图片**、
 > 不再附带那行文字说明。详见 [为什么关键词入口只发图片、不发那行文字](#为什么关键词入口只发图片不发那行文字)。
+>
+> 🗣️ 除了上面两条**精确**入口，还有第三条**自然语言**入口（`FAVOR_RANK_AI_TRIGGER_ENABLED`，默认开）：
+> 插件把沙盒工具 `查看好感度排行榜` 交给 AI，群友说「看看好感度排行」「好感榜怎么样」「谁跟我关系最好」
+> 这类话时，由 AI 判断意图后调用它。命中判断交给模型，所以什么说法都听得懂，代价是这类消息会正常走一次模型。
+> 它不发 `BLOCK_TRIGGER`，AI 在沙盒回合内调用工具发图，框架会把这张图和 AI 当轮回复的文字
+> **合并成一条图文消息**发出去。三条入口共用同一个 `build_rank_card`，卡片内容完全一致。
 
 | 命令 | 别名 | 权限 | 说明 |
 |---|---|---|---|

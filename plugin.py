@@ -7,7 +7,7 @@ plugin = NekroPlugin(
     name="天使记忆",
     module_name="nekro_memory_angel",
     description="分层长期记忆、滑动窗口短期记忆、结构化事实、回忆、用户画像、灵魂状态与事件驱动关系状态机",
-    version="1.3.3",
+    version="1.3.4",
     author="luoxiQAQ",
     url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
     allow_sleep=False,
@@ -190,6 +190,16 @@ class AngelMemoryConfig(ConfigBase):
         description=(
             "逗号或空格分隔，必须与整条消息完全相等才触发（不做包含匹配，避免误触发）。"
             "注意不要填「好感度」——它是第三方「抽老婆」插件 affinity 的别名，含义不同。"
+        ),
+    )
+    FAVOR_RANK_AI_TRIGGER_ENABLED: bool = Field(
+        default=True,
+        title="允许 AI 按自然语言查看排行榜",
+        description=(
+            "开启后，插件会把「查看好感度排行榜」这个工具交给 AI，"
+            "群友用自然语言（「看看好感度排行」「好感榜怎么样」）也能拿到排行榜卡片。"
+            "命中与否由 AI 判断，所以更灵活，代价是这类消息会正常走一次模型。"
+            "关闭后该工具对 AI 不可见，只剩 /查看好感度 命令与无前缀关键词两条精确入口。"
         ),
     )
     WEBUI_ACCESS_KEY: str = Field(

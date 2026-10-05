@@ -410,10 +410,7 @@ FAVOR_RANK_EMPTY_HINT_EVENT = (
     "或由管理员用 /好感度事件 手动记录后，这里就会有内容。"
 )
 
-FAVOR_RANK_EMPTY_HINT_ENROLL = (
-    "当前频道还没有任何关系档案——本频道还没有人发过言。\n"
-    "「聊过就进榜」已开启：群友发言会自动建档，等有人说话再试即可。"
-)
+FAVOR_RANK_EMPTY_HINT_ENROLL = "当前频道还没有任何关系档案——本频道还没有人发过言。"
 
 
 def _rank_empty_hint() -> str:
@@ -829,6 +826,62 @@ async def list_favorability_profiles(_ctx: AgentCtx, limit: int = 8) -> str:
         for profile in profiles
     ]
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+@plugin.mount_sandbox_method(
+    SandboxMethodType.AGENT,
+    "查看好感度排行榜",
+    description=(
+        "查看当前频道的关系阶段排行榜，并把排行榜卡片图片直接发到当前频道。"
+        "当用户用自然语言想看好感度 / 关系 / 亲密度排行榜时调用，例如"
+        "「看看好感度排行」「好感榜怎么样」「谁跟我关系最好」「群里谁跟我最亲」。"
+        "调用后不要复述榜单里的名字和分数，用一句话自然带过即可。"
+    ),
+)
+async def view_favor_rank(_ctx: AgentCtx) -> str:
+    """把当前频道的好感度排行榜卡片发出去，并把榜单摘要返回给 Agent。
+
+    与命令入口 `/查看好感度`、无前缀关键词入口共用同一套 `build_rank_card` +
+    `publish_rank_card`，所以三条入口渲染出来的卡片完全一致。
+    这里只负责把图片交给消息管线；在沙盒回合内图片会被框架暂存，
+    等 AI 这一轮的回复文字到达后合并成一条图文消息发出。
+
+    Returns:
+        str: 发送结果与榜单摘要（供 Agent 组织自然语言回复）。
+    """
+    if not config.ENABLE_FAVORABILITY:
+        return FAVOR_DISABLED_HINT
+    chat_key = _ctx.chat_key
+    profiles = await load_rank_profiles(chat_key)
+    if not profiles:
+        return _rank_empty_hint()
+    card_path = await build_rank_card(chat_key, profiles)
+    if card_path is None:
+        return "排行榜卡片渲染失败（缺少 Pillow 或可用中文字体），没有可发送的图片。"
+    try:
+        # 与关键词入口一致：必须先落到 uploads，消息管线只认含 uploads 段的沙盒路径。
+        card_send_path = await asyncio.to_thread(publish_rank_card, card_path, chat_key)
+    except Exception:
+        logger.exception("排行榜卡片复制到 uploads 失败（Agent 入口）")
+        return "排行榜卡片发送失败，请改用 /查看好感度 命令查看。"
+    await message_api.send_image(chat_key, card_send_path, _ctx, record=False)
+    top = "、".join(
+        f"{index}. {profile.display_name or profile.user_id}（{profile.stage}）"
+        for index, profile in enumerate(profiles[:3], start=1)
+    )
+    return f"排行榜卡片已发到当前频道，共 {len(profiles)} 人。前 3 名：{top}。"
+
+
+@plugin.mount_collect_methods()
+async def _collect_sandbox_methods(_ctx: AgentCtx) -> list[Any]:
+    """按配置裁剪暴露给 Agent 的沙盒方法列表。
+
+    只在 `FAVOR_RANK_AI_TRIGGER_ENABLED` 关闭时生效：把 `查看好感度排行榜` 从工具表里
+    摘掉，其余方法原样返回。返回的是 `SandboxMethod` 对象，框架会直接采用。
+    """
+    if config.FAVOR_RANK_AI_TRIGGER_ENABLED:
+        return list(plugin.sandbox_methods)
+    return [method for method in plugin.sandbox_methods if method.func is not view_favor_rank]
 
 
 @plugin.mount_sandbox_method(
