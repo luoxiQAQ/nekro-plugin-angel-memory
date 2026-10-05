@@ -22,7 +22,20 @@ from nekro_agent.services.plugin.schema import SandboxMethodType
 
 from . import card
 from .engine import contains_sensitive_secret, engine, storage
-from .favorability import format_delta, stage_guide, stage_of, unlock_hint
+from .favorability import (
+    EVENT_KINDS,
+    SEVERITY_LABELS,
+    STAGE_NAMES,
+    clamp_stage,
+    direction_label,
+    kind_catalog,
+    kind_label,
+    min_favor_ceiling_for_stage,
+    progress_ratio_by_stage,
+    stage_guide,
+    stage_index,
+    unlock_hint,
+)
 from .plugin import config, plugin
 from .storage import normalize_tags
 
@@ -254,7 +267,8 @@ async def angel_recall(
     ceiling: int | None = None
     if config.ENABLE_FAVORABILITY and config.ENABLE_FAVOR_GATING and user_id:
         favor = await asyncio.to_thread(storage.get_favor, chat_key=_ctx.chat_key, user_id=user_id)
-        ceiling = favor.score if favor else int(config.FAVOR_DEFAULT_SCORE)
+        stage = favor.stage if favor else clamp_stage(config.FAVOR_DEFAULT_STAGE)
+        ceiling = min_favor_ceiling_for_stage(stage)
     memories = await asyncio.to_thread(
         storage.search_memories,
         chat_key=_ctx.chat_key,
@@ -376,33 +390,39 @@ def _clean_tags(tags: list[str] | None) -> list[str]:
 
 def _format_favor_profile_text(profile: Any, events: list[dict[str, Any]]) -> str:
     lines = [
-        f"[好感度档案] {profile.display_name or profile.user_id}",
+        f"[关系档案] {profile.display_name or profile.user_id}",
         f"用户 ID: {profile.user_id}",
-        f"当前好感度: {profile.score}/{int(config.FAVOR_MAX_ABS_SCORE)}（{stage_of(profile.score)}）",
+        f"关系阶段: {profile.stage}（展示分 {profile.score}/{int(config.FAVOR_MAX_ABS_SCORE)}）",
+        f"阶段内证据: 正向 {profile.pos_weight:.1f} / 负向 {profile.neg_weight:.1f}"
+        f"（正向事件种类 {len(profile.pos_kinds)} 种）",
         f"稳定印象: {profile.summary or '尚未形成稳定关系印象。'}",
-        f"互动提示: {profile.interaction_hint or stage_guide(profile.score)}",
+        f"互动基调: {profile.interaction_hint or stage_guide(profile.stage)}",
         f"关系标签: {'、'.join(profile.tags) if profile.tags else '无'}",
-        f"最近变动原因: {profile.last_reason or '暂无'}",
+        f"累计事件数: {profile.event_count}",
     ]
     if events:
-        lines.append("最近关系变化：")
+        lines.append("最近关系事件：")
         for event in events:
+            label = event.get("label") or kind_label(event.get("kind"))
+            severity = SEVERITY_LABELS.get(int(event.get("severity") or 0), "")
+            change = ""
+            if event.get("stage_after") and event.get("stage_after") != event.get("stage_before"):
+                change = f" → {event['stage_before']}变{event['stage_after']}"
             lines.append(
-                f"- {format_delta(event['delta'])} | {event['reason']} | 调整后 {event['score_after']}"
+                f"- [{label}{('/' + severity) if severity else ''}] {event.get('evidence')}{change}"
             )
     else:
-        lines.append("最近关系变化：暂无明确记录")
+        lines.append("最近关系事件：暂无记录")
     return "\n".join(lines)
 
 
 def _render_rank_text(profiles: list[Any]) -> str:
-    max_abs = int(config.FAVOR_MAX_ABS_SCORE)
-    lines = ["好感度排行榜"]
+    lines = ["好感度排行榜（按关系阶段排序）"]
     for index, profile in enumerate(profiles, start=1):
         tags = f" [{'/'.join(profile.tags)}]" if profile.tags else ""
         lines.append(
             f"{index}. {profile.display_name or profile.user_id} — "
-            f"{profile.score}/{max_abs}（{stage_of(profile.score)}）{tags}"
+            f"{profile.stage}（展示分 {profile.score}）{tags}"
         )
     return "\n".join(lines)
 
@@ -423,7 +443,10 @@ async def build_rank_card(chat_key: str, profiles: list[Any]) -> Path | None:
             "name": profile.display_name or profile.user_id,
             "user_id": profile.user_id,
             "score": profile.score,
-            "stage": stage_of(profile.score),
+            "stage": profile.stage,
+            "stage_rank": stage_index(profile.stage),
+            "progress": progress_ratio_by_stage(profile.stage, profile.pos_weight, profile.neg_weight),
+            "events": profile.event_count,
             "tags": profile.tags,
             "avatar_path": avatars.get(profile.user_id),
         }
@@ -442,80 +465,92 @@ async def build_rank_card(chat_key: str, profiles: list[Any]) -> Path | None:
 
 @plugin.mount_sandbox_method(
     SandboxMethodType.BEHAVIOR,
-    "调整好感度",
-    description="基于当前频道内某个用户的具体行为，对其长期关系状态做增减调整，并记录证据。",
+    "记录关系事件",
+    description="记录一次具体的关系事件，由事件驱动关系阶段跃迁；这是改变关系的唯一正规入口。",
 )
-async def adjust_favorability(
+async def record_relation_event(
     _ctx: AgentCtx,
-    delta: int,
-    reason: str,
+    kind: str,
+    evidence: str,
     target_user_id: str = "",
+    severity: int = 2,
     summary: str = "",
     interaction_hint: str = "",
     tags: list[str] | None = None,
     display_name: str = "",
 ) -> str:
-    """调整当前频道内某个用户的长期好感度。
+    """记录一次关系事件，让关系阶段按状态机规则演化。
+
+    关系不是靠加减分数，而是靠事件累积：事件类型决定方向，严重度决定强度，
+    证据写清楚具体发生了什么。阶段跃迁还需要「多种类事件 + 已停留足够久」，防止刷分。
 
     适用场景：
-    - 用户长期帮助你、认真反馈、表达关心，关系逐步升温
-    - 用户持续挑衅、欺骗、越界，关系逐步降温
+    - 用户主动帮你解决具体问题 → kind=help
+    - 用户在你低落时认真安慰 → kind=support
+    - 用户答应的事真的做到了 → kind=promise_kept
+    - 用户反复越界、被明确拒绝后仍纠缠 → kind=harassment
 
     不适用场景：
-    - 只是一句玩笑
+    - 只是一句玩笑、一次玩梗
     - 当前一时的害羞、生气、紧张等短时情绪
 
     Args:
-        delta (int): 本次调整分值，正数加分、负数扣分。受单次上限/每日上限/边际递减约束。
-        reason (str): 关系变化的具体证据，必须写清楚原因，不能只有氛围词。
-        target_user_id (str): 目标用户的平台用户 ID。留空时默认使用当前触发用户。
+        kind (str): 事件类型，取值见下方说明。
+        evidence (str): 具体证据，必须写清楚发生了什么，不能只有「聊得不错」这类氛围词。
+        target_user_id (str): 目标用户平台 ID。留空时默认使用当前触发用户。
+        severity (int): 严重度，1=轻微 / 2=明显 / 3=严重，默认 2。
         summary (str): 可选，覆盖「稳定印象」描述。
-        interaction_hint (str): 可选，覆盖后续互动语气建议。
-        tags (list[str] | None): 可选，补充关系标签，如 ["熟客", "认真反馈"]。
-        display_name (str): 可选，补充或修正该用户的显示名称。
+        interaction_hint (str): 可选，覆盖后续互动基调建议。
+        tags (list[str] | None): 可选，补充关系标签。
+        display_name (str): 可选，补充或修正显示名称。
 
     Returns:
-        str: 调整结果；若被约束层拦下会说明原因。
+        str: 事件记录结果；若被约束层拦下会说明原因。
     """
     if not config.ENABLE_FAVORABILITY:
         return FAVOR_DISABLED_HINT
+    key = str(kind or "").strip().lower()
+    if key not in EVENT_KINDS:
+        return f"未记录：未知事件类型 `{kind}`。可用类型：{kind_catalog()}"
     user_id = _resolve_favor_user(_ctx, target_user_id)
-    outcome = await engine.evaluate_favor_adjustment(
+    profile, outcome, decision = await engine.record_relation_event(
         chat_key=_ctx.chat_key,
         user_id=user_id,
-        delta=int(delta),
-        reason=reason,
-    )
-    if not outcome.applied:
-        return f"未调整好感度：{outcome.rejected_reason}"
-    profile = await asyncio.to_thread(
-        storage.apply_favor_delta,
-        chat_key=_ctx.chat_key,
-        user_id=user_id,
-        delta=outcome.delta,
-        reason=reason,
+        kind=key,
+        evidence=evidence,
+        severity=int(severity),
         display_name=display_name,
         summary=summary,
         interaction_hint=interaction_hint,
         tags=_clean_tags(tags),
-        max_abs=int(config.FAVOR_MAX_ABS_SCORE),
-        max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
     )
-    note = f"（{'；'.join(outcome.notes)}）" if outcome.notes else ""
-    return (
-        f"已调整 {profile.display_name or profile.user_id} 的好感度：{format_delta(outcome.delta)}，"
-        f"当前 {profile.score}/{int(config.FAVOR_MAX_ABS_SCORE)}（{stage_of(profile.score)}）{note}"
-    )
+    if not outcome.applied:
+        return f"未记录关系事件：{outcome.rejected_reason}"
+    label = kind_label(key)
+    lines = [
+        f"已记录关系事件：{label}（{SEVERITY_LABELS.get(int(severity), '')}）→ {profile.display_name or profile.user_id}",
+        f"当前关系阶段：{profile.stage}（阶段内正向证据 {profile.pos_weight:.1f} / 负向 {profile.neg_weight:.1f}）",
+    ]
+    if decision.reset_evidence:
+        lines.append(f"关系发生变化：{direction_label(decision.direction)}（{decision.reason}）")
+    else:
+        remaining = ""
+        if profile.stage != "特别亲密":
+            remaining = "；继续积累不同类型的事件才会进入下一阶段"
+        lines.append(f"关系暂未跃迁{remaining}")
+    if outcome.notes:
+        lines.append(f"备注：{'；'.join(outcome.notes)}")
+    return "\n".join(lines)
 
 
 @plugin.mount_sandbox_method(
     SandboxMethodType.BEHAVIOR,
-    "重设好感度档案",
-    description="直接重写某个用户在当前频道中的好感度档案，适合初始化或大幅修正。",
+    "重设关系阶段",
+    description="人工直接把某个用户的关系阶段设定为指定值，会清空当前阶段内的证据，适合初始化或大幅修正。",
 )
-async def set_favorability_profile(
+async def set_relation_stage(
     _ctx: AgentCtx,
-    score: int,
+    stage: str,
     summary: str,
     target_user_id: str = "",
     interaction_hint: str = "",
@@ -523,56 +558,55 @@ async def set_favorability_profile(
     tags: list[str] | None = None,
     display_name: str = "",
 ) -> str:
-    """直接重设当前频道内某个用户的好感度档案。
-
-    当你发现先前档案明显偏差、需要初始化完整关系卡、或发生了大幅关系跃迁时使用。
+    """人工直接设定关系阶段（覆盖状态机）。
 
     Args:
-        score (int): 重设后的内部评分。
+        stage (str): 目标阶段，取值：排斥 / 保留 / 中立 / 亲近 / 偏爱 / 特别亲密。
         summary (str): 稳定印象总结，必填。
-        target_user_id (str): 目标用户的平台用户 ID。留空时默认使用当前触发用户。
-        interaction_hint (str): 后续互动方式建议。
-        reason (str): 本次重设原因。
+        target_user_id (str): 目标用户平台 ID。留空时默认使用当前触发用户。
+        interaction_hint (str): 后续互动基调建议。
+        reason (str): 本次设定原因。
         tags (list[str] | None): 关系标签。
         display_name (str): 可选显示名称。
 
     Returns:
-        str: 重设结果。
+        str: 设定结果。
     """
     if not config.ENABLE_FAVORABILITY:
         return FAVOR_DISABLED_HINT
     if not str(summary or "").strip():
-        return "未重设：必须提供 summary（稳定印象）。"
+        return "未设定：必须提供 summary（稳定印象）。"
+    if str(stage or "").strip() not in STAGE_NAMES:
+        return f"未设定：阶段 `{stage}` 无效。可选：{' / '.join(STAGE_NAMES)}"
     user_id = _resolve_favor_user(_ctx, target_user_id)
     profile = await asyncio.to_thread(
-        storage.overwrite_favor,
+        storage.set_favor_stage,
         chat_key=_ctx.chat_key,
         user_id=user_id,
-        score=int(score),
-        reason=reason or "手动重设好感度档案",
+        stage=str(stage).strip(),
+        reason=reason or "人工设定关系阶段",
         display_name=display_name,
         summary=summary,
         interaction_hint=interaction_hint,
         tags=_clean_tags(tags),
-        max_abs=int(config.FAVOR_MAX_ABS_SCORE),
         max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
     )
     return (
-        f"已重设 {profile.display_name or profile.user_id} 的好感度档案，"
-        f"当前 {profile.score}/{int(config.FAVOR_MAX_ABS_SCORE)}（{stage_of(profile.score)}）。"
+        f"已把 {profile.display_name or profile.user_id} 的关系阶段设定为 {profile.stage}"
+        f"（展示分 {profile.score}）。"
     )
 
 
 @plugin.mount_sandbox_method(
     SandboxMethodType.BEHAVIOR,
-    "删除好感度档案",
-    description="删除当前频道内某个用户的关系档案，适合清理误建数据或完全重置。",
+    "删除关系档案",
+    description="删除当前频道内某个用户的关系档案与事件历史，适合清理误建数据或完全重置。",
 )
 async def remove_favorability_profile(_ctx: AgentCtx, target_user_id: str = "") -> str:
     """删除当前频道内某个用户的关系档案。
 
     Args:
-        target_user_id (str): 目标用户的平台用户 ID。留空时默认使用当前触发用户。
+        target_user_id (str): 目标用户平台 ID。留空时默认使用当前触发用户。
 
     Returns:
         str: 删除结果。
@@ -582,21 +616,21 @@ async def remove_favorability_profile(_ctx: AgentCtx, target_user_id: str = "") 
     user_id = _resolve_favor_user(_ctx, target_user_id)
     profile = await asyncio.to_thread(storage.get_favor, chat_key=_ctx.chat_key, user_id=user_id)
     if profile is None:
-        return f"当前频道不存在用户 `{user_id}` 的好感度档案。"
+        return f"当前频道不存在用户 `{user_id}` 的关系档案。"
     await asyncio.to_thread(storage.delete_favor, chat_key=_ctx.chat_key, user_id=user_id)
-    return f"已删除 {profile.display_name or profile.user_id} 的好感度档案。"
+    return f"已删除 {profile.display_name or profile.user_id} 的关系档案。"
 
 
 @plugin.mount_sandbox_method(
     SandboxMethodType.AGENT,
-    "查看好感度档案",
-    description="查看当前频道内某个用户的完整关系档案详情。",
+    "查看关系档案",
+    description="查看当前频道内某个用户的关系阶段、阶段内证据与最近事件。",
 )
 async def get_favorability_profile(_ctx: AgentCtx, target_user_id: str = "") -> str:
-    """查看当前频道内某个用户的完整好感度档案。
+    """查看当前频道内某个用户的完整关系档案。
 
     Args:
-        target_user_id (str): 目标用户的平台用户 ID。留空时默认使用当前触发用户。
+        target_user_id (str): 目标用户平台 ID。留空时默认使用当前触发用户。
 
     Returns:
         str: 完整档案文本。
@@ -606,7 +640,7 @@ async def get_favorability_profile(_ctx: AgentCtx, target_user_id: str = "") -> 
     user_id = _resolve_favor_user(_ctx, target_user_id)
     profile = await asyncio.to_thread(storage.get_favor, chat_key=_ctx.chat_key, user_id=user_id)
     if profile is None:
-        return f"当前频道不存在用户 `{user_id}` 的好感度档案。"
+        return f"当前频道不存在用户 `{user_id}` 的关系档案。"
     events = await asyncio.to_thread(
         storage.list_favor_events,
         chat_key=_ctx.chat_key,
@@ -618,17 +652,17 @@ async def get_favorability_profile(_ctx: AgentCtx, target_user_id: str = "") -> 
 
 @plugin.mount_sandbox_method(
     SandboxMethodType.AGENT,
-    "列出好感度档案",
-    description="列出当前频道中已建立的好感度档案摘要，适合群聊场景下先确定目标用户。",
+    "列出关系档案",
+    description="列出当前频道中已建立的关系档案摘要，适合群聊场景下先确定目标用户。",
 )
 async def list_favorability_profiles(_ctx: AgentCtx, limit: int = 8) -> str:
-    """列出当前频道中已建立的好感度档案摘要。
+    """列出当前频道中已建立的关系档案摘要。
 
     Args:
         limit (int): 返回的最大档案数量。
 
     Returns:
-        str: JSON 数组，含用户 ID、名称、评分、阶段与摘要。
+        str: JSON 数组，含用户 ID、名称、阶段、阶段内证据与摘要。
     """
     if not config.ENABLE_FAVORABILITY:
         return "[]"
@@ -642,9 +676,13 @@ async def list_favorability_profiles(_ctx: AgentCtx, limit: int = 8) -> str:
         {
             "user_id": profile.user_id,
             "display_name": profile.display_name,
+            "stage": profile.stage,
+            "stage_rank": stage_index(profile.stage),
             "score": profile.score,
-            "max_abs_score": int(config.FAVOR_MAX_ABS_SCORE),
-            "stage": stage_of(profile.score),
+            "pos_weight": round(profile.pos_weight, 2),
+            "neg_weight": round(profile.neg_weight, 2),
+            "pos_kinds": profile.pos_kinds,
+            "event_count": profile.event_count,
             "summary": profile.summary,
             "interaction_hint": profile.interaction_hint,
             "tags": profile.tags,
@@ -656,46 +694,133 @@ async def list_favorability_profiles(_ctx: AgentCtx, limit: int = 8) -> str:
 
 
 @plugin.mount_sandbox_method(
-    SandboxMethodType.AGENT,
-    "结算好感度衰减",
-    description="手动执行一次好感度衰减结算（长时间不互动的档案降温）。",
+    SandboxMethodType.BEHAVIOR,
+    "记住事实",
+    description="把「谁·什么属性·什么值」这类可精确查询的短事实结构化持久化，而不是塞进上下文。",
 )
-async def run_favorability_decay(_ctx: AgentCtx) -> str:
-    """手动执行一次好感度衰减结算，不受间隔节流限制。
+async def remember_fact(
+    _ctx: AgentCtx,
+    attribute: str,
+    value: str,
+    target_user_id: str = "",
+    subject: str = "",
+    confidence: float = 0.85,
+) -> str:
+    """保存一条结构化事实（L2 层）。
+
+    适合：口味、时区、生日、常用工具、称呼偏好、项目代号、约定时间等可精确检索的短事实。
+    不适合：整段对话、情绪、需要叙事的内容（那些用 angel_remember）。
+
+    Args:
+        attribute (str): 属性名，简短名词，如「口味」「时区」「称呼偏好」。
+        value (str): 属性值，要具体，如「不吃香菜」「UTC+8」。
+        target_user_id (str): 事实归属用户平台 ID。留空时默认使用当前触发用户。
+        subject (str): 主体名称，默认用用户 ID。
+        confidence (float): 置信度 0~1，默认 0.85。
 
     Returns:
-        str: 本次降温的档案数量。
+        str: 保存结果。
     """
-    if not config.ENABLE_FAVORABILITY:
-        return FAVOR_DISABLED_HINT
-    changed = await engine.run_favor_decay_if_due(force=True)
-    return f"好感度衰减结算完成，本次降温 {changed} 个档案。"
+    if not config.ENABLE_FACTS:
+        return "结构化事实功能当前已关闭。"
+    user_id = _resolve_favor_user(_ctx, target_user_id)
+    try:
+        fact = await engine.remember_fact(
+            chat_key=_ctx.chat_key,
+            user_id=user_id,
+            subject=subject or user_id,
+            attribute=attribute,
+            value=value,
+            confidence=float(confidence),
+        )
+    except ValueError as error:
+        return f"未保存事实：{error}"
+    return f"已记住事实：{fact.render()}（F{fact.short_id}，置信度 {fact.confidence:.2f}）"
 
 
 @plugin.mount_sandbox_method(
     SandboxMethodType.AGENT,
-    "结算好感度回升",
-    description="手动执行一次好感度回升结算（负分随时间回升到 0）。",
+    "查看事实",
+    description="列出或检索当前频道已持久化的结构化事实。",
 )
-async def run_favorability_recover(_ctx: AgentCtx) -> str:
-    """手动执行一次好感度回升结算，不受间隔节流限制。
+async def list_facts(_ctx: AgentCtx, query: str = "", target_user_id: str = "", limit: int = 10) -> str:
+    """查看结构化事实。
+
+    Args:
+        query (str): 检索关键词；留空则按用户列出最近更新的事实。
+        target_user_id (str): 限定用户平台 ID；留空则不限定。
+        limit (int): 返回条数上限。
 
     Returns:
-        str: 本次回升的档案数量。
+        str: JSON 数组。
+    """
+    if not config.ENABLE_FACTS:
+        return "[]"
+    size = max(1, min(int(limit), 50))
+    if str(query or "").strip():
+        facts = await asyncio.to_thread(
+            storage.search_facts, chat_key=_ctx.chat_key, query=query, limit=size
+        )
+    else:
+        facts = await asyncio.to_thread(
+            storage.list_facts,
+            chat_key=_ctx.chat_key,
+            user_id=str(target_user_id or "").strip(),
+            limit=size,
+        )
+    return json.dumps([fact.to_dict() for fact in facts], ensure_ascii=False, indent=2)
+
+
+@plugin.mount_sandbox_method(
+    SandboxMethodType.BEHAVIOR,
+    "删除事实",
+    description="按事实编号或 ID 删除一条已持久化的结构化事实。",
+)
+async def remove_fact(_ctx: AgentCtx, fact_id: str) -> str:
+    """删除一条结构化事实。
+
+    Args:
+        fact_id (str): 事实编号（F12 里的 12）或内部 ID。
+
+    Returns:
+        str: 删除结果。
+    """
+    if not config.ENABLE_FACTS:
+        return "结构化事实功能当前已关闭。"
+    identifier = str(fact_id or "").strip().lstrip("Ff")
+    if not identifier:
+        return "未删除：请提供事实编号。"
+    deleted = await asyncio.to_thread(storage.delete_fact, chat_key=_ctx.chat_key, identifier=identifier)
+    return "已删除该事实。" if deleted else f"未找到事实 `{fact_id}`。"
+
+
+@plugin.mount_sandbox_method(
+    SandboxMethodType.AGENT,
+    "结算关系衰减",
+    description="手动执行一次关系证据衰减结算：阶段内证据按半衰期衰减，长期无互动的关系会自然回落一级。",
+)
+async def run_favorability_erosion(_ctx: AgentCtx) -> str:
+    """手动执行一次关系证据衰减结算，不受间隔节流限制。
+
+    Returns:
+        str: 本次结算结果。
     """
     if not config.ENABLE_FAVORABILITY:
         return FAVOR_DISABLED_HINT
-    changed = await engine.run_favor_recover_if_due(force=True)
-    return f"好感度回升结算完成，本次回升 {changed} 个档案。"
+    result = await engine.run_favor_erosion_if_due(force=True)
+    return (
+        f"关系证据衰减结算完成：{result.get('eroded', 0)} 个档案证据衰减，"
+        f"{result.get('demoted', 0)} 个档案关系回落。"
+    )
 
 
-# ============================================================ 好感度：命令
+# ============================================================ 关系：命令
 
 
 @plugin.mount_command(
     name="查看好感度",
-    aliases=["好感度排行", "好感榜", "favor_rank"],
-    description="查看本频道的好感度排行榜",
+    aliases=["好感度排行", "好感榜", "fav_rank", "favor_rank"],
+    description="查看本频道的关系阶段排行榜",
     permission=CommandPermission.USER,
     usage="查看好感度",
     category="关系管理",
@@ -729,8 +854,8 @@ async def favor_rank_command(context: CommandExecutionContext) -> CommandRespons
 
 @plugin.mount_command(
     name="好感度档案",
-    aliases=["favor_status", "fvs"],
-    description="查看自己（或指定用户）的好感度档案",
+    aliases=["关系档案", "fav_status", "favor_status", "fvs"],
+    description="查看自己（或指定用户）的关系档案与最近事件",
     permission=CommandPermission.USER,
     usage="好感度档案 [用户ID]",
     category="关系管理",
@@ -757,103 +882,79 @@ async def favor_status_command(
 
 
 @plugin.mount_command(
-    name="好感度加分",
-    aliases=["favor_add"],
-    description="增加指定用户在当前频道中的好感度",
+    name="好感度事件",
+    aliases=["关系事件", "fav_event"],
+    description="记录一次关系事件，由事件驱动关系阶段跃迁",
     permission=CommandPermission.SUPER_USER,
-    usage="好感度加分 <用户ID> <分值>",
+    usage="好感度事件 <用户ID> <事件类型> <具体证据> [严重度1-3]",
     category="关系管理",
 )
-async def favor_add_command(
+async def favor_event_command(
     context: CommandExecutionContext,
     target_user_id: Annotated[str, Arg("目标用户平台 ID", positional=True)],
-    delta: Annotated[int, Arg("增加分值，必须大于 0", positional=True)],
+    kind: Annotated[str, Arg(f"事件类型，如 {kind_catalog()}", positional=True)],
+    evidence: Annotated[str, Arg("具体证据，写清楚发生了什么", positional=True)],
+    severity: Annotated[int, Arg("严重度 1=轻微 / 2=明显 / 3=严重", positional=True)] = 2,
 ) -> CommandResponse:
-    if int(delta) <= 0:
-        return CmdCtl.failed("分值必须大于 0。")
-    profile = await asyncio.to_thread(
-        storage.apply_favor_delta,
+    if not config.ENABLE_FAVORABILITY:
+        return CmdCtl.failed(FAVOR_DISABLED_HINT)
+    key = str(kind or "").strip().lower()
+    if key not in EVENT_KINDS:
+        return CmdCtl.failed(f"未知事件类型 `{kind}`。可用类型：{kind_catalog()}")
+    profile, outcome, decision = await engine.record_relation_event(
         chat_key=context.chat_key,
         user_id=str(target_user_id).strip(),
-        delta=int(delta),
-        reason=f"由于神秘原因，你对{target_user_id}的好感度上升了",
-        max_abs=int(config.FAVOR_MAX_ABS_SCORE),
-        max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
+        kind=key,
+        evidence=evidence,
+        severity=int(severity),
     )
-    return CmdCtl.success(
-        f"已为 {profile.display_name or profile.user_id} 增加 {format_delta(int(delta))}，"
-        f"当前 {profile.score}/{int(config.FAVOR_MAX_ABS_SCORE)}（{stage_of(profile.score)}）。"
+    if not outcome.applied:
+        return CmdCtl.failed(f"未记录关系事件：{outcome.rejected_reason}")
+    text = (
+        f"已记录「{kind_label(key)}」→ {profile.display_name or profile.user_id}，"
+        f"当前阶段 {profile.stage}（正向证据 {profile.pos_weight:.1f} / 负向 {profile.neg_weight:.1f}）"
     )
-
-
-@plugin.mount_command(
-    name="好感度扣分",
-    aliases=["favor_sub"],
-    description="减少指定用户在当前频道中的好感度",
-    permission=CommandPermission.SUPER_USER,
-    usage="好感度扣分 <用户ID> <分值>",
-    category="关系管理",
-)
-async def favor_sub_command(
-    context: CommandExecutionContext,
-    target_user_id: Annotated[str, Arg("目标用户平台 ID", positional=True)],
-    delta: Annotated[int, Arg("减少分值，必须大于 0", positional=True)],
-) -> CommandResponse:
-    if int(delta) <= 0:
-        return CmdCtl.failed("分值必须大于 0。")
-    profile = await asyncio.to_thread(
-        storage.apply_favor_delta,
-        chat_key=context.chat_key,
-        user_id=str(target_user_id).strip(),
-        delta=-int(delta),
-        reason=f"由于神秘原因，你对{target_user_id}的好感度下降了",
-        max_abs=int(config.FAVOR_MAX_ABS_SCORE),
-        max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
-    )
-    return CmdCtl.success(
-        f"已为 {profile.display_name or profile.user_id} 扣减 {format_delta(-int(delta))}，"
-        f"当前 {profile.score}/{int(config.FAVOR_MAX_ABS_SCORE)}（{stage_of(profile.score)}）。"
-    )
+    if decision.reset_evidence:
+        text += f"\n关系发生变化：{direction_label(decision.direction)}（{decision.reason}）"
+    return CmdCtl.success(text)
 
 
 @plugin.mount_command(
     name="好感度设定",
-    aliases=["favor_set"],
-    description="直接设定指定用户在当前频道中的好感度分值",
+    aliases=["关系设定", "fav_set", "favor_set"],
+    description="人工直接把指定用户的关系阶段设定为某个值",
     permission=CommandPermission.SUPER_USER,
-    usage="好感度设定 <用户ID> <分数>",
+    usage="好感度设定 <用户ID> <阶段>",
     category="关系管理",
 )
 async def favor_set_command(
     context: CommandExecutionContext,
     target_user_id: Annotated[str, Arg("目标用户平台 ID", positional=True)],
-    score: Annotated[int, Arg("设定后的好感度分值", positional=True)],
+    stage: Annotated[str, Arg("目标阶段：排斥/保留/中立/亲近/偏爱/特别亲密", positional=True)],
 ) -> CommandResponse:
-    user_id = str(target_user_id).strip()
-    existing = await asyncio.to_thread(storage.get_favor, chat_key=context.chat_key, user_id=user_id)
+    if not config.ENABLE_FAVORABILITY:
+        return CmdCtl.failed(FAVOR_DISABLED_HINT)
+    target = str(stage or "").strip()
+    if target not in STAGE_NAMES:
+        return CmdCtl.failed(f"阶段 `{stage}` 无效。可选：{' / '.join(STAGE_NAMES)}")
     profile = await asyncio.to_thread(
-        storage.overwrite_favor,
+        storage.set_favor_stage,
         chat_key=context.chat_key,
-        user_id=user_id,
-        score=int(score),
-        reason=f"由于神秘原因，你对{user_id}的好感度被重新设定了",
-        summary=existing.summary if existing else "",
-        interaction_hint=existing.interaction_hint if existing else "",
-        tags=existing.tags if existing else [],
-        display_name=existing.display_name if existing else "",
-        max_abs=int(config.FAVOR_MAX_ABS_SCORE),
+        user_id=str(target_user_id).strip(),
+        stage=target,
+        reason="管理员通过命令设定关系阶段",
         max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
     )
     return CmdCtl.success(
-        f"已设定 {profile.display_name or profile.user_id} 的好感度为 "
-        f"{profile.score}/{int(config.FAVOR_MAX_ABS_SCORE)}（{stage_of(profile.score)}）。"
+        f"已把 {profile.display_name or profile.user_id} 的关系阶段设定为 {profile.stage}"
+        f"（展示分 {profile.score}）。"
     )
 
 
 @plugin.mount_command(
     name="好感度删除",
-    aliases=["favor_remove"],
-    description="删除指定用户在当前频道中的好感度档案",
+    aliases=["关系删除", "fav_remove", "favor_remove"],
+    description="删除指定用户在当前频道中的关系档案与事件历史",
     permission=CommandPermission.SUPER_USER,
     usage="好感度删除 <用户ID>",
     category="关系管理",
@@ -862,9 +963,11 @@ async def favor_remove_command(
     context: CommandExecutionContext,
     target_user_id: Annotated[str, Arg("目标用户平台 ID", positional=True)],
 ) -> CommandResponse:
+    if not config.ENABLE_FAVORABILITY:
+        return CmdCtl.failed(FAVOR_DISABLED_HINT)
     user_id = str(target_user_id).strip()
     profile = await asyncio.to_thread(storage.get_favor, chat_key=context.chat_key, user_id=user_id)
     if profile is None:
-        return CmdCtl.failed(f"当前频道不存在用户 `{user_id}` 的好感度档案。")
+        return CmdCtl.failed(f"当前频道不存在用户 `{user_id}` 的关系档案。")
     await asyncio.to_thread(storage.delete_favor, chat_key=context.chat_key, user_id=user_id)
-    return CmdCtl.success(f"已删除 {profile.display_name or profile.user_id} 的好感度档案。")
+    return CmdCtl.success(f"已删除 {profile.display_name or profile.user_id} 的关系档案。")

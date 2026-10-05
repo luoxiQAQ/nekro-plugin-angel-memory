@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>天使记忆 · 好感度管理</title>
+<title>天使记忆 · 关系状态机管理</title>
 <style>
   :root {
     --bg: #f7f4ef;
@@ -12,6 +12,7 @@
     --text: #3c3630;
     --sub: #8d867e;
     --red: #e34c4c;
+    --green: #3aa36a;
     --red-soft: #fdeeea;
     --accent: #d97757;
   }
@@ -47,41 +48,46 @@
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid #f1ece5; vertical-align: middle; }
   th { font-size: 12px; color: var(--sub); font-weight: 500; }
-  td.score { font-weight: 600; color: var(--red); }
+  td.score { font-weight: 600; }
+  td.score.up { color: var(--red); }
+  td.score.down { color: var(--green); }
   .tag {
     display: inline-block; margin: 1px 4px 1px 0; padding: 1px 8px; border-radius: 9px;
     background: var(--red-soft); color: var(--accent); font-size: 11px;
   }
-  .stage { font-size: 12px; color: var(--sub); }
+  .stage { display: inline-block; padding: 1px 9px; border-radius: 9px; font-size: 12px; background: #f3efe9; color: var(--sub); }
+  .stage.up { background: var(--red-soft); color: var(--red); }
+  .stage.down { background: #e9f5ee; color: var(--green); }
+  .evidence { font-size: 12px; color: var(--sub); }
   img#card { max-width: 100%; border-radius: 12px; border: 1px solid var(--border); display: none; }
   .empty { color: var(--sub); padding: 20px 0; text-align: center; }
   #toast {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
     background: #3c3630; color: #fff; padding: 9px 16px; border-radius: 10px;
     font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none;
+    max-width: 80vw; white-space: pre-wrap;
   }
   #toast.show { opacity: 1; }
 </style>
 </head>
 <body>
-  <h1>天使记忆 · 好感度管理</h1>
-  <div class="muted" id="hint">按频道（chat_key）浏览和维护好感度档案。</div>
+  <h1>天使记忆 · 关系状态机管理</h1>
+  <div class="muted" id="hint">关系由「事件」驱动：阶段跃迁需要证据权重 + 事件种类多样性 + 最短停留时间。展示分只是投影。</div>
 
   <div class="bar">
     <input type="text" id="chatKey" placeholder="chat_key，例如 onebot_v11-3692682071:group_1050507404" />
     <button class="primary" id="loadBtn">载入</button>
     <button id="cardBtn">生成排行榜卡片</button>
-    <button id="decayBtn">衰减结算</button>
-    <button id="recoverBtn">回升结算</button>
+    <button id="erodeBtn">证据衰减结算</button>
   </div>
 
   <div class="layout">
     <div class="panel">
       <div class="stats">
         <div>档案总数<b id="statTotal">-</b></div>
-        <div>正分档案<b id="statPositive">-</b></div>
-        <div>负分档案<b id="statNegative">-</b></div>
-        <div>分数上限<b id="statMax">-</b></div>
+        <div>正面阶段<b id="statPositive">-</b></div>
+        <div>负面阶段<b id="statNegative">-</b></div>
+        <div>累计事件<b id="statEvents">-</b></div>
       </div>
       <div id="tableWrap"><div class="empty">先填 chat_key 再点「载入」</div></div>
     </div>
@@ -99,6 +105,7 @@ const BASE = location.pathname.replace(/\/[^/]*$/, '');
 const PARAMS = new URLSearchParams(location.search);
 const KEY = PARAMS.get('key') || '';
 const TOKEN = PARAMS.get('token') || '';
+let STAGES = ['排斥', '保留', '中立', '亲近', '偏爱', '特别亲密'];
 
 function withAuth(query) {
   const p = new URLSearchParams(query || {});
@@ -111,7 +118,7 @@ function toast(msg) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2200);
+  setTimeout(() => el.classList.remove('show'), 2600);
 }
 
 async function api(path, options) {
@@ -131,6 +138,13 @@ function esc(text) {
   ));
 }
 
+function stageClass(stage) {
+  const index = STAGES.indexOf(stage);
+  if (index >= 3) return 'up';
+  if (index <= 1) return 'down';
+  return '';
+}
+
 async function load() {
   const chatKey = document.getElementById('chatKey').value.trim();
   if (!chatKey) { toast('请先填写 chat_key'); return; }
@@ -139,31 +153,37 @@ async function load() {
   try {
     const data = await api('/favor?' + withAuth({ chat_key: chatKey, hide_empty: 'false' }));
     const items = data.items || [];
+    if (Array.isArray(data.stages) && data.stages.length) STAGES = data.stages;
     document.getElementById('statTotal').textContent = items.length;
-    document.getElementById('statPositive').textContent = items.filter(i => i.score > 0).length;
-    document.getElementById('statNegative').textContent = items.filter(i => i.score < 0).length;
-    document.getElementById('statMax').textContent = data.max_abs_score;
+    document.getElementById('statPositive').textContent = items.filter(i => STAGES.indexOf(i.stage) >= 3).length;
+    document.getElementById('statNegative').textContent = items.filter(i => STAGES.indexOf(i.stage) <= 1).length;
+    document.getElementById('statEvents').textContent = items.reduce((sum, i) => sum + (i.event_count || 0), 0);
     if (!items.length) {
       wrap.innerHTML = '<div class="empty">当前会话还没有建立任何好感度档案。</div>';
       return;
     }
     const rows = items.map((item, index) => {
       const tags = (item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+      const cls = stageClass(item.stage);
+      const evidence = `正 ${Number(item.pos_weight || 0).toFixed(1)} / 负 ${Number(item.neg_weight || 0).toFixed(1)}`
+        + `（正向 ${(item.pos_kinds || []).length} 类）`;
       return `<tr>
         <td>${index + 1}</td>
         <td>${esc(item.display_name || item.user_id)}<div class="muted">${esc(item.user_id)}</div></td>
-        <td class="score">${item.score > 0 ? '+' : ''}${item.score}</td>
-        <td><span class="stage">${esc(item.stage)}</span></td>
+        <td><span class="stage ${cls}">${esc(item.stage)}</span></td>
+        <td class="score ${cls}">${item.score > 0 ? '+' : ''}${item.score}</td>
+        <td class="evidence">${esc(evidence)}<div class="muted">事件 ${item.event_count || 0} 条</div></td>
         <td>${tags || '<span class="muted">—</span>'}</td>
         <td class="muted">${esc(item.last_reason || '—')}</td>
         <td>
-          <button data-act="set" data-uid="${esc(item.user_id)}">改分</button>
+          <button data-act="stage" data-uid="${esc(item.user_id)}">设定阶段</button>
+          <button data-act="event" data-uid="${esc(item.user_id)}">记录事件</button>
           <button class="danger" data-act="del" data-uid="${esc(item.user_id)}">删除</button>
         </td>
       </tr>`;
     }).join('');
     wrap.innerHTML = `<table><thead><tr>
-      <th>#</th><th>用户</th><th>好感度</th><th>阶段</th><th>标签</th><th>最近变动</th><th>操作</th>
+      <th>#</th><th>用户</th><th>阶段</th><th>展示分</th><th>阶段内证据</th><th>标签</th><th>最近事件</th><th>操作</th>
     </tr></thead><tbody>${rows}</tbody></table>`;
     wrap.querySelectorAll('button[data-act]').forEach(btn => {
       btn.addEventListener('click', () => handleRow(btn.dataset.act, btn.dataset.uid, chatKey));
@@ -175,19 +195,31 @@ async function load() {
 
 async function handleRow(act, userId, chatKey) {
   try {
-    if (act === 'set') {
-      const raw = prompt(`把 ${userId} 的好感度设为（-100 ~ 100）：`, '0');
+    if (act === 'stage') {
+      const raw = prompt(`把 ${userId} 的关系阶段设为：\n可选：${STAGES.join(' / ')}`, STAGES[2]);
       if (raw === null) return;
-      const score = parseInt(raw, 10);
-      if (Number.isNaN(score)) { toast('请输入整数'); return; }
+      const stage = raw.trim();
+      if (!STAGES.includes(stage)) { toast('阶段无效'); return; }
       await api('/favor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_key: chatKey, user_id: userId, score, reason: 'WebUI 手动重设好感度' }),
+        body: JSON.stringify({ chat_key: chatKey, user_id: userId, stage, reason: 'WebUI 人工设定关系阶段' }),
       });
-      toast('已更新');
+      toast('已设定阶段');
+    } else if (act === 'event') {
+      const kind = prompt(`为 ${userId} 记录一次关系事件，事件类型：\nhelp / support / promise_kept / deep_talk / gift / banter /\ndisrespect / promise_broken / harassment / betrayal / deception / spam`, 'help');
+      if (kind === null) return;
+      const evidence = prompt('请写明具体证据（不能只有「聊得不错」这类氛围词）：', '');
+      if (evidence === null) return;
+      const res = await api('/favor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_key: chatKey, user_id: userId, kind: kind.trim(), evidence, severity: 2 }),
+      });
+      const moved = res.transition && res.transition.direction ? `（${res.transition.reason}）` : '';
+      toast(`已记录事件${moved}`);
     } else if (act === 'del') {
-      if (!confirm(`确认删除 ${userId} 的好感度档案？`)) return;
+      if (!confirm(`确认删除 ${userId} 的关系档案与事件历史？`)) return;
       await api('/favor?' + withAuth({ chat_key: chatKey, user_id: userId }), { method: 'DELETE' });
       toast('已删除');
     }
@@ -220,10 +252,10 @@ async function renderCard() {
   }
 }
 
-async function settle(kind) {
+async function settle() {
   try {
-    const data = await api('/favor/' + kind, { method: 'POST' });
-    toast(`结算完成，影响 ${data.changed} 个档案`);
+    const data = await api('/favor/erode', { method: 'POST' });
+    toast(`结算完成：${data.eroded || 0} 个档案证据衰减，${data.demoted || 0} 个档案关系回落`);
     load();
   } catch (error) {
     toast('结算失败：' + error.message);
@@ -232,8 +264,7 @@ async function settle(kind) {
 
 document.getElementById('loadBtn').addEventListener('click', load);
 document.getElementById('cardBtn').addEventListener('click', renderCard);
-document.getElementById('decayBtn').addEventListener('click', () => settle('decay'));
-document.getElementById('recoverBtn').addEventListener('click', () => settle('recover'));
+document.getElementById('erodeBtn').addEventListener('click', settle);
 document.getElementById('chatKey').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 
 if (!KEY && !TOKEN) {

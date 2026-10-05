@@ -12,7 +12,7 @@ from nekro_agent.services.user.deps import get_current_active_user, get_current_
 from nekro_agent.services.user.perm import Role, check_role, require_role
 
 from .engine import engine, storage
-from .favorability import stage_of
+from .favorability import STAGE_NAMES, EVENT_KINDS
 from .plugin import config, plugin
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -36,8 +36,12 @@ class ImportBody(BaseModel):
 class FavorUpdateBody(BaseModel):
     chat_key: str
     user_id: str
-    score: int | None = Field(default=None, ge=-10000, le=10000)
-    delta: int | None = Field(default=None, ge=-10000, le=10000)
+    # 人工设定阶段（覆盖状态机）
+    stage: str | None = None
+    # 或者记录一次关系事件（事件驱动）
+    kind: str | None = None
+    evidence: str = ""
+    severity: int = Field(default=2, ge=1, le=3)
     summary: str | None = None
     interaction_hint: str | None = None
     tags: list[str] | None = None
@@ -198,10 +202,9 @@ def create_router() -> APIRouter:
             hide_empty=hide_empty,
         )
         return {
-            "items": [
-                {**item.to_dict(), "stage": stage_of(item.score)} for item in items
-            ],
+            "items": [item.to_dict() for item in items],
             "max_abs_score": int(config.FAVOR_MAX_ABS_SCORE),
+            "stages": list(STAGE_NAMES),
         }
 
     @router.get("/favor/events")
@@ -225,37 +228,53 @@ def create_router() -> APIRouter:
         user_id = body.user_id.strip()
         if not user_id:
             raise HTTPException(status_code=422, detail="user_id 不能为空")
-        if body.score is None and body.delta is None:
-            raise HTTPException(status_code=422, detail="score 与 delta 至少要提供一个")
-        if body.score is not None:
+        if not body.stage and not body.kind:
+            raise HTTPException(status_code=422, detail="stage（人工设定阶段）与 kind（记录关系事件）至少要提供一个")
+        if body.stage:
+            target = str(body.stage).strip()
+            if target not in STAGE_NAMES:
+                raise HTTPException(status_code=422, detail=f"stage 无效，可选：{' / '.join(STAGE_NAMES)}")
             profile = await asyncio.to_thread(
-                storage.overwrite_favor,
+                storage.set_favor_stage,
                 chat_key=body.chat_key,
                 user_id=user_id,
-                score=int(body.score),
-                reason=body.reason or "WebUI 手动重设好感度",
+                stage=target,
+                reason=body.reason or "WebUI 人工设定关系阶段",
                 display_name=body.display_name or "",
                 summary=body.summary or "",
                 interaction_hint=body.interaction_hint or "",
                 tags=body.tags,
-                max_abs=int(config.FAVOR_MAX_ABS_SCORE),
                 max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
             )
-        else:
-            profile = await asyncio.to_thread(
-                storage.apply_favor_delta,
-                chat_key=body.chat_key,
-                user_id=user_id,
-                delta=int(body.delta or 0),
-                reason=body.reason or "WebUI 手动调整好感度",
-                display_name=body.display_name or "",
-                summary=body.summary or "",
-                interaction_hint=body.interaction_hint or "",
-                tags=body.tags,
-                max_abs=int(config.FAVOR_MAX_ABS_SCORE),
-                max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
-            )
-        return {**profile.to_dict(), "stage": stage_of(profile.score)}
+            return {"mode": "set_stage", "profile": profile.to_dict()}
+        profile, outcome, decision = await engine.record_relation_event(
+            chat_key=body.chat_key,
+            user_id=user_id,
+            kind=str(body.kind),
+            evidence=body.evidence or body.reason,
+            severity=int(body.severity),
+            display_name=body.display_name or "",
+            summary=body.summary or "",
+            interaction_hint=body.interaction_hint or "",
+            tags=body.tags,
+        )
+        if not outcome.applied:
+            raise HTTPException(status_code=422, detail=outcome.rejected_reason)
+        return {
+            "mode": "record_event",
+            "profile": profile.to_dict(),
+            "event": {
+                "kind": outcome.kind,
+                "polarity": outcome.polarity,
+                "weight": outcome.weight,
+                "notes": outcome.notes,
+            },
+            "transition": {
+                "direction": decision.direction,
+                "stage": decision.stage,
+                "reason": decision.reason,
+            },
+        }
 
     @router.delete("/favor")
     async def delete_favor(
@@ -267,13 +286,49 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="好感度档案不存在")
         return {"ok": True}
 
+    @router.post("/favor/erode")
+    async def run_favor_erode(_guard=Depends(_favor_access)) -> dict[str, int]:
+        """证据衰减 + 长期无互动回落一级。"""
+        return await engine.run_favor_erosion_if_due(force=True)
+
     @router.post("/favor/decay")
-    async def run_favor_decay(_guard=Depends(_favor_access)) -> dict[str, int]:
-        return {"changed": await engine.run_favor_decay_if_due(force=True)}
+    async def run_favor_decay_legacy(_guard=Depends(_favor_access)) -> dict[str, int]:
+        """兼容旧路径：与 /favor/erode 等价。"""
+        return await engine.run_favor_erosion_if_due(force=True)
 
     @router.post("/favor/recover")
-    async def run_favor_recover(_guard=Depends(_favor_access)) -> dict[str, int]:
-        return {"changed": await engine.run_favor_recover_if_due(force=True)}
+    async def run_favor_recover_legacy(_guard=Depends(_favor_access)) -> dict[str, int]:
+        """兼容旧路径：负向证据同样随衰减回归，因此与 /favor/erode 等价。"""
+        return await engine.run_favor_erosion_if_due(force=True)
+
+    @router.get("/facts")
+    async def list_facts(
+        chat_key: str,
+        user_id: str = "",
+        query: str = "",
+        limit: int = 50,
+        _guard=Depends(_favor_access),
+    ) -> dict[str, Any]:
+        if query.strip():
+            items = await asyncio.to_thread(
+                storage.search_facts, chat_key=chat_key, query=query, limit=limit
+            )
+        else:
+            items = await asyncio.to_thread(
+                storage.list_facts, chat_key=chat_key, user_id=user_id, limit=limit
+            )
+        return {"items": [item.to_dict() for item in items]}
+
+    @router.delete("/facts")
+    async def delete_fact(
+        chat_key: str,
+        fact_id: str,
+        _guard=Depends(_favor_access),
+    ) -> dict[str, bool]:
+        identifier = str(fact_id).strip().lstrip("Ff")
+        if not await asyncio.to_thread(storage.delete_fact, chat_key=chat_key, identifier=identifier):
+            raise HTTPException(status_code=404, detail="事实不存在")
+        return {"ok": True}
 
     @router.get("/favor/card")
     async def favor_card(
