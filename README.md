@@ -209,12 +209,11 @@ NekroAgent 将认证插件路由挂载在：
 | `好感度设定` | 关系设定 / fav_set | 超管 | `好感度设定 <用户ID> <阶段>` |
 | `好感度删除` | 关系删除 / fav_remove | 超管 | `好感度删除 <用户ID>` |
 
-> 英文别名统一用 `fav_*` 短横线风格（`fav_rank` / `fav_status` / `fav_event` / `fav_set` / `fav_remove`），
-> 刻意避开 `favor_set` / `favor_status` / `favor_remove` / `fvs` 这几个名字——
-> 第三方插件 `liugu.nekro_favorability` 被停用后，它的命令注册**不会**被框架清理，
-> 仍会占用这些短名并导致「命令存在冲突」。
-> 同理，`好感度排行` 这个别名也与第三方插件的 `affinity_board` 撞名，已改用 `好感榜`。
-> 若彻底卸载这些旧插件，被让出的名字才可安全启用。
+> 英文别名统一用 `fav_*` 短横线风格（`fav_rank` / `fav_status` / `fav_event` / `fav_set` / `fav_remove`）。
+> 之所以不用 `favor_set` / `favor_status` / `favor_remove` / `fvs`：这类短名很容易被其它插件占用，
+> 而框架**不会清理已停用或已删除插件的命令注册**，撞名时用户敲命令只会收到「命令存在冲突」。
+> 同理，`好感度排行` 这个别名与第三方插件的 `affinity_board` 撞名，故用 `好感榜` 代替。
+> 插件已被卸载的旧命令名（如 `favor_status`）如确有需要，可在 `main.py` 里按需加回 `aliases`。
 
 排行榜卡片依赖 Pillow 与可用的中文字体；缺少任一时自动回退纯文本，不影响其他功能。
 `FAVOR_RANK_CARD_FONT` 可显式指定中文字体路径，留空则自动探测（Noto Sans CJK / 微软雅黑 / 苹方）。
