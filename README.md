@@ -57,6 +57,29 @@ SQLite 数据库为该目录下的 `angel_memory.sqlite3`，包含 `memories`、
 阶段配色遵循中文习惯的「涨红跌绿」——正面阶段红、负面阶段绿、中立灰。
 进度条反映的是「阶段 + 阶段内证据进度」，不是裸分数。
 
+### 卡片为什么要往 `uploads/` 里再放一份
+
+渲染好的卡片先落在插件数据目录（`cache/favor_rank/`，管理 API 的 `GET /favor/card` 直接读它），
+但**这条路径发不进群**：Nekro 的消息管线只认路径里含 `uploads` / `shared` 段的「沙盒路径」，
+会把 `/app/uploads/<相对>` 还原成 `<NEKRO_DATA_DIR>/uploads/<清洗后的 chat_key>/<相对>`；
+直接把 `plugin_data/...` 交给它就会抛
+
+```text
+Unable to detect path location for: .../plugin_data/luoxiQAQ.nekro_memory_angel/cache/favor_rank/xxx.png,
+make sure your path is valid shared path or upload path
+```
+
+并且这个报错会被当成**文本消息发到群里**（而不是静默失败），所以看起来像机器人在刷错误日志。
+因此不带 `/` 的关键词入口（`查看好感度`）会先把卡片复制一份到
+
+```text
+<NEKRO_DATA_DIR>/uploads/<清洗后的 chat_key>/favor_rank/favor_rank_<md5(chat_key)[:10]>.png
+```
+
+再以 `/app/uploads/favor_rank/<文件名>` 交给消息管线。复制失败时自动降级为文字排行榜，
+不会把异常文本发进群。带 `/` 的命令入口不用手动复制 —— 框架的
+`materialize_command_response` 会把命令输出的图片自行复制进 `uploads/`。
+
 ## 记忆分层
 
 | 层 | 载体 | 生命周期 | 注入方式 |
