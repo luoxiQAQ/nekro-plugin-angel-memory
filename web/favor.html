@@ -32,6 +32,10 @@
     border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
     color: var(--text); font-size: 13px;
   }
+  button.chan {
+    display: block; width: 100%; text-align: left; margin-bottom: 6px;
+    font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
   button {
     padding: 9px 14px; border-radius: 10px; border: 1px solid var(--border);
     background: var(--panel); color: var(--text); cursor: pointer; font-size: 13px;
@@ -75,11 +79,17 @@
   <div class="muted" id="hint">关系由「事件」驱动：阶段跃迁需要证据权重 + 事件种类多样性 + 最短停留时间。展示分只是投影。</div>
 
   <div class="bar">
-    <input type="text" id="chatKey" placeholder="chat_key，例如 onebot_v11-3692682071:group_1050507404" />
+    <input type="text" id="chatKey"
+           placeholder="chat_key（如 onebot_v11-3692682071:group_1050507404），或直接填访问密钥 WEBUI_ACCESS_KEY" />
     <button class="primary" id="loadBtn">载入</button>
     <button id="cardBtn">生成排行榜卡片</button>
     <button id="erodeBtn">证据衰减结算</button>
+    <button class="danger" id="wipeBtn">清空本频道</button>
+    <label style="font-size:12px;color:var(--sub);display:flex;align-items:center;gap:6px">
+      <input type="checkbox" id="autoChk" checked /> 自动刷新
+    </label>
   </div>
+  <div class="muted" id="keyState" style="margin:-6px 0 12px"></div>
 
   <div class="layout">
     <div class="panel">
@@ -89,7 +99,7 @@
         <div>负面阶段<b id="statNegative">-</b></div>
         <div>累计事件<b id="statEvents">-</b></div>
       </div>
-      <div id="tableWrap"><div class="empty">先填 chat_key 再点「载入」</div></div>
+      <div id="tableWrap"><div class="empty">填 chat_key 或访问密钥后点「载入」</div></div>
     </div>
     <div class="panel">
       <div class="muted" style="margin-bottom:10px">排行榜卡片预览</div>
@@ -103,15 +113,133 @@
 <script>
 const BASE = location.pathname.replace(/\/[^/]*$/, '');
 const PARAMS = new URLSearchParams(location.search);
-const KEY = PARAMS.get('key') || '';
-const TOKEN = PARAMS.get('token') || '';
+const KEY_STORE = 'nekro_angel_webui_key';
+
+/* 取管理员凭据：优先网址上的 ?token=，否则读面板的登录态。
+   NekroAgent 前端用 zustand persist 把 JWT 存在 localStorage['auth-storage']：
+     {"state":{"token":"<JWT>",...},"version":0}
+   本页与面板同源，所以能直接读到；没登录就返回空串，此时请求会 401。 */
+function readAdminToken() {
+  const fromUrl = PARAMS.get('token');
+  if (fromUrl) return fromUrl;
+  try {
+    const raw = localStorage.getItem('auth-storage');
+    if (!raw) return '';
+    const parsed = JSON.parse(raw);
+    const token = parsed && parsed.state && parsed.state.token;
+    return token ? String(token) : '';
+  } catch (error) {
+    return '';
+  }
+}
+const TOKEN = readAdminToken();
 let STAGES = ['排斥', '保留', '中立', '亲近', '偏爱', '特别亲密'];
+
+/* 访问密钥的来源：网址上的 ?key=，或上次记住的值。
+   页面初始化时会把网址上的 ?key= 收进 localStorage 并把它从地址栏抹掉，
+   避免密钥留在浏览器历史、截图和分享链接里。 */
+function readStoredKey() {
+  try { return localStorage.getItem(KEY_STORE) || ''; } catch (error) { return ''; }
+}
+
+function currentKey() {
+  return PARAMS.get('key') || readStoredKey();
+}
+
+function saveKey(value) {
+  try {
+    if (value) localStorage.setItem(KEY_STORE, value);
+    else localStorage.removeItem(KEY_STORE);
+  } catch (error) { /* 隐私模式等场景写不了，忽略即可 */ }
+}
 
 function withAuth(query) {
   const p = new URLSearchParams(query || {});
-  if (KEY) p.set('key', KEY);
+  const key = currentKey();
+  if (key) p.set('key', key);
   if (TOKEN) p.set('token', TOKEN);
   return p.toString();
+}
+
+const HINT_DEFAULT = '关系由「事件」驱动：阶段跃迁需要证据权重 + 事件种类多样性 + 最短停留时间。展示分只是投影。';
+
+function refreshHint() {
+  const el = document.getElementById('hint');
+  if (currentKey() || TOKEN) { el.textContent = HINT_DEFAULT; return; }
+  el.textContent = '提示：未检测到访问凭据。把插件配置里的 WEBUI_ACCESS_KEY 填进下面的输入框点「载入」即可；'
+    + '或先在 NekroAgent 面板登录后刷新本页（会自动读取登录态）。';
+}
+
+function renderKeyState() {
+  const el = document.getElementById('keyState');
+  if (!currentKey()) { el.textContent = ''; return; }
+  el.innerHTML = '已记住访问密钥（只存在本机浏览器）　'
+    + '<a href="#" id="keyClearLink" style="color:var(--accent)">清除密钥</a>';
+  document.getElementById('keyClearLink').addEventListener('click', event => {
+    event.preventDefault();
+    saveKey('');
+    toast('已清除访问密钥');
+    refreshHint();
+    renderKeyState();
+    document.getElementById('tableWrap').innerHTML =
+      '<div class="empty">密钥已清除。请重新填 chat_key，或把密钥填进输入框点「载入」。</div>';
+  });
+}
+
+/* 探测某个字符串是不是访问密钥：拿它去打 /channels，通得过就把频道清单一起带回来
+   （顺带省掉一次重复请求）。不是密钥则返回 null。 */
+async function probeAsKey(value) {
+  try {
+    const res = await fetch(BASE + '/channels?' + new URLSearchParams({ key: value }).toString());
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (error) {
+    return null;
+  }
+}
+
+/* 把输入框里的那串认成密钥：存下来，之后所有请求都免登录。 */
+function adoptKey(value) {
+  saveKey(value);
+  lastRenderSig = '';
+  toast('已识别为访问密钥，免登录生效');
+  refreshHint();
+  renderKeyState();
+}
+
+/* 只填了密钥、还没指定频道时，列出本实例下所有有数据的频道供点选。 */
+async function showChannels() {
+  const wrap = document.getElementById('tableWrap');
+  wrap.innerHTML = '<div class="empty">读取频道列表…</div>';
+  try {
+    renderChannels(await api('/channels'));
+  } catch (error) {
+    wrap.innerHTML = `<div class="empty">读取频道列表失败：${esc(error.message)}</div>`;
+  }
+}
+
+function renderChannels(data) {
+  const wrap = document.getElementById('tableWrap');
+  const items = (data && data.items) || [];
+  lastLoadedKey = '';
+  document.getElementById('statTotal').textContent = String(items.length);
+  document.getElementById('statPositive').textContent = '-';
+  document.getElementById('statNegative').textContent = '-';
+  document.getElementById('statEvents').textContent = '-';
+  if (!items.length) {
+    wrap.innerHTML = '<div class="empty">这个实例下还没有任何频道数据。</div>';
+    return;
+  }
+  wrap.innerHTML = `<div class="muted" style="margin-bottom:10px">免登录已生效。共 ${items.length} 个频道，点一个查看：</div>`
+    + items.map(item => `<button class="chan" data-key="${esc(item.chat_key)}">`
+        + `${esc(item.chat_key)}<span class="muted" style="margin-left:8px">好感度 ${item.favor_count} · 记忆 ${item.memory_count}</span>`
+      + '</button>').join('');
+  wrap.querySelectorAll('button.chan').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.getElementById('chatKey').value = btn.dataset.key;
+      load();
+    });
+  });
 }
 
 function toast(msg) {
@@ -145,14 +273,26 @@ function stageClass(stage) {
   return '';
 }
 
-async function load() {
+let lastLoadedKey = '';
+let lastRenderSig = '';
+
+/* silent = true 时用于自动刷新：不闪「载入中…」，数据没变也不重绘 */
+async function load(silent) {
   const chatKey = document.getElementById('chatKey').value.trim();
-  if (!chatKey) { toast('请先填写 chat_key'); return; }
+  if (!chatKey) { if (!silent) toast('请填写 chat_key 或访问密钥'); return; }
   const wrap = document.getElementById('tableWrap');
-  wrap.innerHTML = '<div class="empty">载入中…</div>';
+
+  /* 输入框里填的正好是访问密钥 → 当成密钥用，列出频道 */
+  if (chatKey === currentKey()) { await showChannels(); return; }
+
+  if (!silent) wrap.innerHTML = '<div class="empty">载入中…</div>';
   try {
     const data = await api('/favor?' + withAuth({ chat_key: chatKey, hide_empty: 'false' }));
     const items = data.items || [];
+    lastLoadedKey = chatKey;
+    const sig = JSON.stringify(items);
+    if (silent && sig === lastRenderSig) return;
+    lastRenderSig = sig;
     if (Array.isArray(data.stages) && data.stages.length) STAGES = data.stages;
     document.getElementById('statTotal').textContent = items.length;
     document.getElementById('statPositive').textContent = items.filter(i => STAGES.indexOf(i.stage) >= 3).length;
@@ -189,7 +329,13 @@ async function load() {
       btn.addEventListener('click', () => handleRow(btn.dataset.act, btn.dataset.uid, chatKey));
     });
   } catch (error) {
-    wrap.innerHTML = `<div class="empty">载入失败：${esc(error.message)}</div>`;
+    /* 失败了先怀疑「这串其实是访问密钥」：是就认下来并列频道，不是才报错 */
+    const probed = await probeAsKey(chatKey);
+    if (probed) { adoptKey(chatKey); renderChannels(probed); return; }
+    lastRenderSig = '';
+    wrap.innerHTML = `<div class="empty">载入失败：${esc(error.message)}<br>`
+      + '<span class="muted">若还没鉴权：把插件配置里的 WEBUI_ACCESS_KEY 填进上面的输入框再点「载入」，'
+      + '或先登录 NekroAgent 面板。</span></div>';
   }
 }
 
@@ -262,15 +408,75 @@ async function settle() {
   }
 }
 
-document.getElementById('loadBtn').addEventListener('click', load);
+async function wipeChannel() {
+  const chatKey = document.getElementById('chatKey').value.trim();
+  if (!chatKey) { toast('请先填写 chat_key'); return; }
+  if (!confirm(`将清空「${chatKey}」的全部数据：\n\n`
+    + '长期记忆 / 笔记 / 用户画像 / 灵魂状态 / 关键事实 / 近期梗概 / 好感度档案与事件流水。\n\n'
+    + '此操作不可恢复，且只影响这一个频道。确定继续？')) return;
+  const tail = chatKey.split(/[_:]/).pop() || chatKey;
+  const typed = prompt(`二次确认：请输入 ${tail} 以继续`, '');
+  if (typed === null) return;
+  if (typed.trim() !== tail) { toast('输入不匹配，已取消'); return; }
+  try {
+    const data = await api('/reset?' + withAuth({ chat_key: chatKey }), { method: 'POST' });
+    const parts = Object.entries(data || {}).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`);
+    toast('已清空：' + (parts.length ? parts.join('，') : '该频道本来就没有数据'));
+    lastRenderSig = '';
+    load();
+  } catch (error) {
+    toast('清空失败：' + error.message);
+  }
+}
+
+/* 自动刷新：只在「输入框的值 == 最近一次成功载入的值」时才跑，
+   避免用户正在改 chat_key 时被半截值触发。 */
+let autoTimer = null;
+
+function syncAutoRefresh() {
+  const on = document.getElementById('autoChk').checked;
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+  if (!on) return;
+  autoTimer = setInterval(() => {
+    const current = document.getElementById('chatKey').value.trim();
+    if (!current || current !== lastLoadedKey) return;
+    load(true);
+  }, 5000);
+}
+
+document.getElementById('loadBtn').addEventListener('click', () => load());
 document.getElementById('cardBtn').addEventListener('click', renderCard);
 document.getElementById('erodeBtn').addEventListener('click', settle);
+document.getElementById('wipeBtn').addEventListener('click', wipeChannel);
+document.getElementById('autoChk').addEventListener('change', syncAutoRefresh);
 document.getElementById('chatKey').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 
-if (!KEY && !TOKEN) {
-  document.getElementById('hint').textContent =
-    '提示：未检测到访问凭据。请通过 NekroAgent 管理员身份打开，或带上 ?key=<WEBUI_ACCESS_KEY>。';
+/* 密钥初始化：网址上带了 ?key= 就存下来，随后把它从地址栏抹掉，
+   避免密钥留在浏览器历史 / 截图 / 分享链接里。 */
+const urlKey = PARAMS.get('key') || '';
+if (urlKey) {
+  saveKey(urlKey);
+  PARAMS.delete('key');
+  try {
+    const clean = location.pathname + (PARAMS.toString() ? '?' + PARAMS.toString() : '');
+    history.replaceState(null, '', clean);
+  } catch (error) { /* 某些环境不允许改地址栏，忽略 */ }
 }
+
+syncAutoRefresh();
+
+/* 打开时自动加载：网址带 ?chat_key=xxx 就载入那个频道；
+   只带了密钥（或之前记住过密钥）就先列出频道供点选。 */
+const initialChatKey = PARAMS.get('chat_key') || '';
+if (initialChatKey) {
+  document.getElementById('chatKey').value = initialChatKey;
+  load();
+} else if (currentKey()) {
+  showChannels();
+}
+
+refreshHint();
+renderKeyState();
 </script>
 </body>
 </html>
