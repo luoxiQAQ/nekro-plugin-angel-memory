@@ -48,8 +48,17 @@ BADGE_BG = (238, 232, 224)
 BADGE_FG = (140, 133, 126)
 BADGE_TOP = {1: (240, 176, 62), 2: (172, 180, 192), 3: (206, 148, 96)}
 
+# 插件自带字体目录：把子集化的中文字体随插件一起分发，
+# 这样即使用户跑在**没有装中文字体的镜像**（如上游官方镜像只有 DejaVu）
+# 也能正常出图，不依赖宿主环境。
+_ASSET_FONT_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
+_BUNDLED_BOLD_FONT = _ASSET_FONT_DIR / "angel-bold.ttf"
+_BUNDLED_REGULAR_FONT = _ASSET_FONT_DIR / "angel-regular.ttf"
+
 # 按优先级探测的中文字体；DejaVu 之类无中文字形的不列入
 BOLD_FONT_CANDIDATES = (
+    str(_BUNDLED_BOLD_FONT),
+    str(_BUNDLED_REGULAR_FONT),
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Bold.otf",
@@ -60,6 +69,8 @@ BOLD_FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
 )
 REGULAR_FONT_CANDIDATES = (
+    str(_BUNDLED_REGULAR_FONT),
+    str(_BUNDLED_BOLD_FONT),
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
