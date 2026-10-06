@@ -1,20 +1,39 @@
-﻿from pydantic import Field
+﻿import inspect
+
+from pydantic import Field
 
 from nekro_agent.api.plugin import ConfigBase, ExtraField, NekroPlugin
 
 
-plugin = NekroPlugin(
-    name="天使记忆",
-    module_name="nekro_memory_angel",
-    description="分层长期记忆、滑动窗口短期记忆、结构化事实、回忆、用户画像、灵魂状态与事件驱动关系状态机",
-    version="1.5.1",
-    author="luoxiQAQ",
-    url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
-    allow_sleep=False,
-    # 面板插件详情页的「页面」Tab：框架会把 web/ 目录作为静态根，
-    # 用同源 iframe 内嵌 /plugins/<key>/__webui__/favor.html（无需额外鉴权）。
-    webui_path="web/favor.html",
-)
+def _framework_supports_webui_path() -> bool:
+    """探测当前 NekroAgent 框架是否支持 NekroPlugin(webui_path=...)。
+
+    该参数由 NekroAgent 2.4.0 引入。旧版框架（< 2.4.0）的 NekroPlugin.__init__
+    没有这个形参，直接传会在构造时抛 TypeError，导致整个插件加载失败。
+    这里做运行时探测：新版才传，旧版优雅降级（仅少了面板「页面」Tab）。
+    """
+    try:
+        return "webui_path" in inspect.signature(NekroPlugin.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+# 面板插件详情页的「页面」Tab：框架会把 web/ 目录作为静态根，
+# 用同源 iframe 内嵌 /plugins/<key>/__webui__/favor.html（无需额外鉴权）。
+# 仅在框架支持时传入，兼容 NekroAgent < 2.4.0。
+_plugin_kwargs: dict = {
+    "name": "天使记忆",
+    "module_name": "nekro_memory_angel",
+    "description": "分层长期记忆、滑动窗口短期记忆、结构化事实、回忆、用户画像、灵魂状态与事件驱动关系状态机",
+    "version": "1.5.2",
+    "author": "luoxiQAQ",
+    "url": "https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
+    "allow_sleep": False,
+}
+if _framework_supports_webui_path():
+    _plugin_kwargs["webui_path"] = "web/favor.html"
+
+plugin = NekroPlugin(**_plugin_kwargs)
 
 
 @plugin.mount_config()
