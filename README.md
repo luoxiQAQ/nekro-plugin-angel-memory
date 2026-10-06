@@ -90,7 +90,7 @@ nekro-agent/
 
 ## 关系管理页
 
-浏览器打开（注意**没有** `/api` 前缀，加上会 404）：
+浏览器打开：
 
 ```text
 http://<面板地址>:8021/plugins/luoxiQAQ.nekro_memory_angel/ui

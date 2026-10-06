@@ -7,7 +7,7 @@ plugin = NekroPlugin(
     name="天使记忆",
     module_name="nekro_memory_angel",
     description="分层长期记忆、滑动窗口短期记忆、结构化事实、回忆、用户画像、灵魂状态与事件驱动关系状态机",
-    version="1.3.5",
+    version="1.3.6",
     author="luoxiQAQ",
     url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
     allow_sleep=False,
@@ -183,6 +183,7 @@ class AngelMemoryConfig(ConfigBase):
             "Nekro 的命令系统强制要求前缀，不带前缀的文本不会进入命令系统，"
             "这里用消息钩子精确匹配关键词来兜底，命中后阻止该消息再唤醒 AI。"
         ),
+        json_schema_extra=ExtraField(is_hidden=True).model_dump(),
     )
     FAVOR_RANK_KEYWORDS: str = Field(
         default="查看好感度,好感榜",
@@ -191,6 +192,7 @@ class AngelMemoryConfig(ConfigBase):
             "逗号或空格分隔，必须与整条消息完全相等才触发（不做包含匹配，避免误触发）。"
             "注意不要填「好感度」——它是第三方「抽老婆」插件 affinity 的别名，含义不同。"
         ),
+        json_schema_extra=ExtraField(is_hidden=True).model_dump(),
     )
     FAVOR_RANK_AI_TRIGGER_ENABLED: bool = Field(
         default=True,
@@ -201,6 +203,7 @@ class AngelMemoryConfig(ConfigBase):
             "命中与否由 AI 判断，所以更灵活，代价是这类消息会正常走一次模型。"
             "关闭后该工具对 AI 不可见，只剩 /查看好感度 命令与无前缀关键词两条精确入口。"
         ),
+        json_schema_extra=ExtraField(is_hidden=True).model_dump(),
     )
     WEBUI_ACCESS_KEY: str = Field(
         default="",
