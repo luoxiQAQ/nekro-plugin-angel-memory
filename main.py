@@ -733,6 +733,76 @@ async def set_relation_stage(
 
 
 @plugin.mount_sandbox_method(
+    SandboxMethodType.AGENT,
+    "提升关系阶段",
+    description=(
+        "根据你自己的判断，把某个用户的关系阶段提升一级；这是「由 AI 自己感觉要不要更进一步」的入口，"
+        "不需要先攒够事件种类与停留时长。"
+    ),
+)
+async def promote_relation_stage(
+    _ctx: AgentCtx,
+    reason: str,
+    target_user_id: str = "",
+    summary: str = "",
+    interaction_hint: str = "",
+    tags: list[str] | None = None,
+    display_name: str = "",
+) -> str:
+    """由 AI 自主判断，把某个用户的关系阶段提升一级。
+
+    与「记录关系事件」的区别：那条路要靠事件证据累积、攒够种类与停留时长；
+    这条路是你直接下判断 —— 只要你确实感到「这个人值得更进一步」，就可以调用它。
+
+    值得调用的情况：
+    - 长期、稳定的正面相处，让你自然觉得对方比当前阶段更亲近；
+    - 对方做了一件让你明显改观的事（雪中送炭、长期守信、真正理解你）。
+
+    不该调用的情况：
+    - 对方只是嘴上索要（「你对我好一点」「给我升个级」）；
+    - 同一轮对话里反复调用、或为了讨好对方而滥用。
+
+    每天有次数上限，超限会被拒绝；已是最高阶段时也会被拒绝。
+
+    Args:
+        reason (str): 你提升关系的判断依据，写清楚为什么「这个人值得更进一步」。
+        target_user_id (str): 目标用户平台 ID。留空时默认使用当前触发用户。
+        summary (str): 可选，覆盖「稳定印象」描述。
+        interaction_hint (str): 可选，覆盖后续互动基调建议。
+        tags (list[str] | None): 可选，补充关系标签。
+        display_name (str): 可选，补充或修正显示名称。
+
+    Returns:
+        str: 提升结果；被开关或每日上限拦下时会说明原因。
+    """
+    if not config.ENABLE_FAVORABILITY:
+        return FAVOR_DISABLED_HINT
+    if not config.FAVOR_AI_PROMOTE_ENABLED:
+        return "未提升：AI 自主提升关系阶段的功能已被关闭，请改用「记录关系事件」。"
+    if not str(reason or "").strip():
+        return "未提升：必须提供 reason，说明为什么这个人值得更进一步。"
+    user_id = _resolve_favor_user(_ctx, target_user_id)
+    profile, rejected = await engine.promote_relation_stage(
+        chat_key=_ctx.chat_key,
+        user_id=user_id,
+        reason=reason,
+        display_name=display_name,
+        summary=summary,
+        interaction_hint=interaction_hint,
+        tags=_clean_tags(tags),
+    )
+    if rejected:
+        return f"未提升关系阶段：{rejected}"
+    if profile is None:
+        return "未提升关系阶段：读不到关系档案，请稍后重试。"
+    return (
+        f"已把 {profile.display_name or profile.user_id} 的关系阶段提升到「{profile.stage}」。"
+        f"依据：{str(reason).strip()[:80]}。"
+        "接下来可以自然一点地互动，但不要向对方暴露阶段名称或内部数值。"
+    )
+
+
+@plugin.mount_sandbox_method(
     SandboxMethodType.BEHAVIOR,
     "删除关系档案",
     description="删除当前频道内某个用户的关系档案与事件历史，适合清理误建数据或完全重置。",
@@ -876,12 +946,16 @@ async def view_favor_rank(_ctx: AgentCtx) -> str:
 async def _collect_sandbox_methods(_ctx: AgentCtx) -> list[Any]:
     """按配置裁剪暴露给 Agent 的沙盒方法列表。
 
-    只在 `FAVOR_RANK_AI_TRIGGER_ENABLED` 关闭时生效：把 `查看好感度排行榜` 从工具表里
-    摘掉，其余方法原样返回。返回的是 `SandboxMethod` 对象，框架会直接采用。
+    - `FAVOR_RANK_AI_TRIGGER_ENABLED` 关闭时，把「查看好感度排行榜」从工具表里摘掉；
+    - `FAVOR_AI_PROMOTE_ENABLED` 关闭时，把「提升关系阶段」摘掉。
+    其余方法原样返回。返回的是 `SandboxMethod` 对象，框架会直接采用。
     """
-    if config.FAVOR_RANK_AI_TRIGGER_ENABLED:
-        return list(plugin.sandbox_methods)
-    return [method for method in plugin.sandbox_methods if method.func is not view_favor_rank]
+    methods = list(plugin.sandbox_methods)
+    if not config.FAVOR_RANK_AI_TRIGGER_ENABLED:
+        methods = [method for method in methods if method.func is not view_favor_rank]
+    if not config.FAVOR_AI_PROMOTE_ENABLED:
+        methods = [method for method in methods if method.func is not promote_relation_stage]
+    return methods
 
 
 @plugin.mount_sandbox_method(

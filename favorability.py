@@ -3,8 +3,13 @@
 设计原则（对应「别搞纯数值加减」）：
 - 权威状态是「阶段」+「阶段内证据累积」，不是裸分数；
 - 一切变化都由**关系事件**驱动，事件带类型、极性、严重度与具体证据；
-- 阶段跃迁要同时满足三个条件：证据权重阈值、事件种类多样性、最短停留时间（滞后防抖）；
+- 阶段跃迁默认只看「证据权重阈值 + 最短停留时间（滞后防抖）」；
+  事件种类多样性（`min_kinds`）保留为可调项，默认 1 = 不强制；
 - 分数只是从 (阶段, 阶段内证据进度) **投影**出来的展示值，供排行榜与记忆门槛使用。
+
+2026-10-06 放宽说明：升级侧阈值整体下调、每日上限调大、不再强制「证据必须具体」，
+并新增「AI 自主提升」通道（见 main.py 的「提升关系阶段」工具）。
+降级侧阈值**保持原值不动** —— 放宽的是「更容易变好」，不是「更容易变坏」。
 
 本模块只做纯计算，不碰数据库、不依赖 NekroAgent 框架，便于单独跑单测。
 """
@@ -32,15 +37,20 @@ class StageDef:
 
 
 # 由低到高。索引即阶段等级 rank。
+#
+# 阈值口径（2026-10-06 放宽）：升级侧刻意做得宽松，让 AI 的判断更容易落地；
+# 降级侧保持原值不动，避免关系因为一时情绪就掉级。
+# 单次事件权重参考：banter 0.8 / shared_interest 1.0 / insight·gift 1.5 /
+# help·support·deep_talk 2.0 / loyalty 2.2 / promise_kept 2.5（严重度 2 时）。
 STAGES: tuple[StageDef, ...] = (
     StageDef(
         name="排斥",
         low=-100,
         high=-60,
         guide="保持距离，谨慎回应，必要时明确边界；不要主动示好。",
-        up_threshold=6.0,
+        up_threshold=3.0,
         down_threshold=0.0,
-        min_hours=12.0,
+        min_hours=4.0,
         idle_demote_hours=0.0,
     ),
     StageDef(
@@ -48,9 +58,9 @@ STAGES: tuple[StageDef, ...] = (
         low=-60,
         high=-20,
         guide="维持礼貌但克制，先观察，不要过度投入，也不要翻旧账。",
-        up_threshold=4.0,
+        up_threshold=2.0,
         down_threshold=3.0,
-        min_hours=8.0,
+        min_hours=3.0,
         idle_demote_hours=720.0,
     ),
     StageDef(
@@ -58,9 +68,9 @@ STAGES: tuple[StageDef, ...] = (
         low=-20,
         high=20,
         guide="正常友好互动，不主动施加亲密语气，也不冷淡。",
-        up_threshold=4.0,
+        up_threshold=2.5,
         down_threshold=3.0,
-        min_hours=4.0,
+        min_hours=1.0,
         idle_demote_hours=1440.0,
     ),
     StageDef(
@@ -68,9 +78,9 @@ STAGES: tuple[StageDef, ...] = (
         low=20,
         high=60,
         guide="可以更自然、更积极地回应，适度体现熟悉感与默契。",
-        up_threshold=8.0,
+        up_threshold=5.0,
         down_threshold=4.0,
-        min_hours=8.0,
+        min_hours=3.0,
         idle_demote_hours=2160.0,
     ),
     StageDef(
@@ -78,9 +88,9 @@ STAGES: tuple[StageDef, ...] = (
         low=60,
         high=85,
         guide="可明显更热情，主动照顾对方体验并记住其偏好。",
-        up_threshold=12.0,
+        up_threshold=8.0,
         down_threshold=6.0,
-        min_hours=12.0,
+        min_hours=6.0,
         idle_demote_hours=2880.0,
     ),
     StageDef(
@@ -120,6 +130,18 @@ def stage_guide(stage: str) -> str:
 
 def clamp_stage(stage: str) -> str:
     return str(stage) if str(stage) in STAGE_INDEX else DEFAULT_STAGE
+
+
+def is_top_stage(stage: str) -> bool:
+    """是否已是最高阶段（无法再提升）。"""
+    return stage_index(stage) >= len(STAGES) - 1
+
+
+def next_stage(stage: str, steps: int = 1) -> str:
+    """返回比当前高 steps 级的阶段名；已在顶端时返回原阶段。"""
+    index = stage_index(stage)
+    target = min(len(STAGES) - 1, index + max(0, int(steps)))
+    return STAGES[target].name
 
 
 def unlock_hint(min_favor: int) -> str:
@@ -228,16 +250,20 @@ def evidence_decay(weight: float, hours: float, half_life_hours: float) -> float
 
 @dataclass(slots=True)
 class EventLimits:
-    """一次事件记录的门槛与防刷分约束。"""
+    """一次事件记录的门槛与防刷分约束。
+
+    2026-10-06 放宽：间隔与每日上限调大、不再强制「证据必须具体」、
+    同类型重复的边际递减放缓 —— 让 AI 对互动价值的判断更容易真的落进状态机。
+    """
 
     max_severity: int = 3
-    min_interval_minutes: int = 15
-    max_events_per_day: int = 12
-    max_positive_per_day: int = 8
-    max_negative_per_day: int = 6
+    min_interval_minutes: int = 3
+    max_events_per_day: int = 30
+    max_positive_per_day: int = 20
+    max_negative_per_day: int = 12
     max_evidence_chars: int = 200
-    require_concrete_evidence: bool = True
-    repeat_decay: float = 0.5  # 同一阶段内同类型事件重复出现时的边际递减
+    require_concrete_evidence: bool = False
+    repeat_decay: float = 0.25  # 同一阶段内同类型事件重复出现时的边际递减
 
 
 @dataclass(slots=True)
@@ -368,7 +394,7 @@ def evaluate_event(
 
 @dataclass(slots=True)
 class TransitionRules:
-    min_kinds: int = 2  # 升级至少需要多少种不同的正向事件
+    min_kinds: int = 1  # 升级至少需要多少种不同的正向事件；默认 1 = 不强制多样性
     max_step: int = 1  # 单次最多跨越几个阶段
     evidence_half_life_hours: float = 72.0
 
@@ -396,7 +422,7 @@ def decide_stage(
 ) -> StageDecision:
     """状态机核心：根据当前阶段内的证据，决定是否跃迁。
 
-    跃迁三条件：净证据权重达阈值 + 事件种类足够 + 已在当前阶段停留够久（滞后）。
+    跃迁条件：净证据权重达阈值 + 事件种类足够（`rules.min_kinds`，默认 1）+ 已在当前阶段停留够久（滞后）。
     """
     current = clamp_stage(stage)
     index = STAGE_INDEX[current]

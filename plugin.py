@@ -7,7 +7,7 @@ plugin = NekroPlugin(
     name="天使记忆",
     module_name="nekro_memory_angel",
     description="分层长期记忆、滑动窗口短期记忆、结构化事实、回忆、用户画像、灵魂状态与事件驱动关系状态机",
-    version="1.3.6",
+    version="1.4.0",
     author="luoxiQAQ",
     url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
     allow_sleep=False,
@@ -126,18 +126,18 @@ class AngelMemoryConfig(ConfigBase):
         description="默认关闭：只告诉模型当前阶段与互动指导语，不把分数/权重塞进提示词。",
     )
     FAVOR_MIN_INTERVAL_MINUTES: int = Field(
-        default=15, ge=0, le=10080, title="同一用户两次关系事件的最小间隔（分钟）", description="0 表示不限制。",
+        default=3, ge=0, le=10080, title="同一用户两次关系事件的最小间隔（分钟）", description="0 表示不限制。",
     )
-    FAVOR_MAX_EVENTS_PER_DAY: int = Field(default=12, ge=1, le=500, title="同一用户每日最多关系事件数")
-    FAVOR_MAX_POSITIVE_PER_DAY: int = Field(default=8, ge=1, le=500, title="同一用户每日最多正向事件数")
-    FAVOR_MAX_NEGATIVE_PER_DAY: int = Field(default=6, ge=1, le=500, title="同一用户每日最多负向事件数")
+    FAVOR_MAX_EVENTS_PER_DAY: int = Field(default=30, ge=1, le=500, title="同一用户每日最多关系事件数")
+    FAVOR_MAX_POSITIVE_PER_DAY: int = Field(default=20, ge=1, le=500, title="同一用户每日最多正向事件数")
+    FAVOR_MAX_NEGATIVE_PER_DAY: int = Field(default=12, ge=1, le=500, title="同一用户每日最多负向事件数")
     FAVOR_REPEAT_DECAY: float = Field(
-        default=0.5, ge=0.0, le=5.0, title="同类型事件边际递减系数",
+        default=0.25, ge=0.0, le=5.0, title="同类型事件边际递减系数",
         description="同一阶段内同类型事件重复出现时权重按 1/(1+k·n) 衰减。",
     )
     FAVOR_STAGE_MIN_KINDS: int = Field(
-        default=2, ge=1, le=8, title="升级所需的最少事件种类数",
-        description="防止单一种类事件反复刷分推动阶段跃迁。",
+        default=1, ge=1, le=8, title="升级所需的最少事件种类数",
+        description="防止单一种类事件反复刷分推动阶段跃迁。默认 1 = 不强制种类多样性。",
     )
     FAVOR_EVIDENCE_HALF_LIFE_HOURS: int = Field(
         default=72, ge=1, le=8760, title="阶段内证据半衰期（小时）",
@@ -145,8 +145,21 @@ class AngelMemoryConfig(ConfigBase):
     )
     FAVOR_ERODE_INTERVAL_HOURS: int = Field(default=12, ge=1, le=8760, title="证据衰减结算间隔（小时）")
     FAVOR_REQUIRE_CONCRETE_EVIDENCE: bool = Field(
-        default=True, title="要求具体证据",
-        description="证据只有「聊得不错」这类氛围描述、没有具体行为时不予记录。",
+        default=False, title="要求具体证据",
+        description="开启后，证据只有「聊得不错」这类氛围描述、没有具体行为时不予记录。默认关闭。",
+    )
+    FAVOR_AI_PROMOTE_ENABLED: bool = Field(
+        default=True,
+        title="允许 AI 自主提升关系阶段",
+        description=(
+            "开启后，AI 可以在对话中判断「这个人值得更进一步」并直接把关系阶段提升一级，"
+            "不再需要攒够事件种类与停留时长。"
+            "这是把「要不要提升」的判断权交给 AI 的开关；关闭后 AI 只能通过记录关系事件间接影响阶段。"
+        ),
+    )
+    FAVOR_AI_PROMOTE_PER_DAY: int = Field(
+        default=3, ge=1, le=50, title="同一用户每日可被 AI 自主提升的次数上限",
+        description="防止通过话术诱导 AI 反复给自己刷阶段；超限后本次提升被拒绝。",
     )
     FAVOR_MAX_EVIDENCE_CHARS: int = Field(default=200, ge=20, le=2000, title="单条事件证据字符上限")
     FAVOR_MAX_EVENT_HISTORY: int = Field(default=12, ge=1, le=200, title="单用户事件记录保留条数")

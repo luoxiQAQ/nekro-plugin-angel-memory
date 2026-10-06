@@ -1183,10 +1183,18 @@ class AngelMemoryStorage:
         interaction_hint: str = "",
         tags: Iterable[str] | None = None,
         max_events: int = 12,
+        last_kind: str = "manual_set",
+        label: str = "人工设定",
         now: float | None = None,
     ) -> FavorProfile:
-        """人工直接设定阶段（覆盖状态机），会清空当前阶段内的证据。"""
+        """直接设定阶段（覆盖状态机），会清空当前阶段内的证据。
+
+        `last_kind` / `label` 用于区分调用来源：人工设定走 `manual_set`，
+        AI 自主提升走 `ai_promote`（后者会被每日次数上限单独统计）。
+        """
         timestamp = float(now or time.time())
+        kind_key = str(last_kind or "manual_set").strip().lower() or "manual_set"
+        kind_label_text = str(label or "").strip() or "人工设定"
         target_stage = clamp_stage(stage)
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1218,7 +1226,7 @@ class AngelMemoryStorage:
                 pos_kinds=[],
                 neg_kinds=[],
                 score=score,
-                last_kind="manual_set",
+                last_kind=kind_key,
                 last_event_at=timestamp,
                 event_count=int(row["event_count"] or 0) + 1,
                 now=timestamp,
@@ -1228,7 +1236,7 @@ class AngelMemoryStorage:
                 "evidence,stage_before,stage_after,delta,reason,score_after,created_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    chat_key, user_id, "manual_set", "人工设定", 0, 2, 0.0,
+                    chat_key, user_id, kind_key, kind_label_text, 0, 2, 0.0,
                     str(reason or "人工设定关系阶段")[:200], stage_before, target_stage, 0,
                     str(reason or "人工设定关系阶段")[:200], score, timestamp,
                 ),
@@ -1354,6 +1362,27 @@ class AngelMemoryStorage:
                 (chat_key, user_id, float(since_ts)),
             ).fetchone()
         return int(row["total"] or 0), int(row["pos"] or 0), int(row["neg"] or 0)
+
+    def count_favor_events_by_kind(
+        self,
+        *,
+        chat_key: str,
+        user_id: str,
+        kind: str,
+        since_ts: float = 0.0,
+    ) -> int:
+        """统计某个用户在指定时间之后、指定事件类型的事件条数。
+
+        用于「AI 自主提升」的每日配额校验（kind='ai_promote'），
+        与 `favor_event_totals` 不同：只按类型计数，不看极性。
+        """
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS total FROM favorability_events "
+                "WHERE chat_key=? AND user_id=? AND kind=? AND created_at>=?",
+                (chat_key, user_id, str(kind or "").strip().lower(), float(since_ts)),
+            ).fetchone()
+        return int(row["total"] or 0)
 
     def erode_favor_evidence(
         self,

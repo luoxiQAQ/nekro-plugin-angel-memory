@@ -45,7 +45,12 @@ nekro-agent/
 - 排行榜卡片：1280 宽双列布局，金 / 银 / 铜名次徽章、圆形头像、进度条与阶段标签，
   配色遵循中文习惯的「涨红跌绿」。
 - 三条入口：`/查看好感度` 命令、群里不带 `/` 直接发 `查看好感度` / `好感榜`、以及自然语言（由 AI 判断意图）。
-- 防刷分：最小事件间隔、每日事件上限、同类型边际递减、升级需要多种类事件、证据必须是具体行为。
+- **AI 自主提升（`FAVOR_AI_PROMOTE_ENABLED`，默认开）**：把「要不要更进一步」的判断权交给 AI——
+  AI 可以在对话里用「提升关系阶段」工具直接把某人提升一级，不必先攒够事件种类与停留时长。
+  保留每日次数上限（`FAVOR_AI_PROMOTE_PER_DAY`，默认 3）防止话术诱导刷阶段。
+- 防刷分（2026-10 已放宽）：最小事件间隔、每日事件上限、同类型边际递减。
+  **放宽的是「更容易变好」**：升级阈值下调、每日上限调大、不再强制多类型事件与具体证据措辞；
+  **降级侧阈值一律未动**，关系不会因为一时情绪就掉级。
 
 ## 群聊命令
 
@@ -76,10 +81,11 @@ nekro-agent/
 - `ENABLE_FAVORABILITY`：启用关系状态机。
 - `ENABLE_FAVOR_GATING` / `FAVOR_DEFAULT_STAGE` / `FAVOR_AUTO_ENROLL`：关系门槛门控、新档案默认阶段、「聊过就进榜」。
 - `FAVOR_EXPOSE_NUMBERS`：是否把内部证据权重 / 展示分写进提示词（默认关闭）。
-- `FAVOR_MIN_INTERVAL_MINUTES` / `FAVOR_MAX_EVENTS_PER_DAY` / `FAVOR_MAX_POSITIVE_PER_DAY` / `FAVOR_MAX_NEGATIVE_PER_DAY`：事件频率与每日上限。
-- `FAVOR_REPEAT_DECAY` / `FAVOR_STAGE_MIN_KINDS`：同类型事件边际递减、升级所需事件种类数。
+- `FAVOR_MIN_INTERVAL_MINUTES` / `FAVOR_MAX_EVENTS_PER_DAY` / `FAVOR_MAX_POSITIVE_PER_DAY` / `FAVOR_MAX_NEGATIVE_PER_DAY`：事件频率与每日上限（默认 3 分钟 / 30 / 20 / 12）。
+- `FAVOR_REPEAT_DECAY` / `FAVOR_STAGE_MIN_KINDS`：同类型事件边际递减（默认 0.25）、升级所需事件种类数（默认 1 = 不强制）。
 - `FAVOR_EVIDENCE_HALF_LIFE_HOURS` / `FAVOR_ERODE_INTERVAL_HOURS`：证据半衰期与衰减结算间隔。
-- `FAVOR_REQUIRE_CONCRETE_EVIDENCE`：证据必须是具体行为（只有氛围词时不予记录）。
+- `FAVOR_REQUIRE_CONCRETE_EVIDENCE`：证据必须是具体行为（只有氛围词时不予记录）。**默认关闭**。
+- `FAVOR_AI_PROMOTE_ENABLED` / `FAVOR_AI_PROMOTE_PER_DAY`：AI 自主提升关系阶段的总开关（默认开）与每人每日次数上限（默认 3）。
 - `FAVOR_MAX_ABS_SCORE`：展示分绝对值上限（仅用于排序展示，不是权威状态）。
 - `FAVOR_MAX_EVENT_HISTORY` / `FAVOR_PROMPT_EVENT_LIMIT` / `FAVOR_GROUP_OVERVIEW_LIMIT` / `FAVOR_MAX_TAGS`：事件流水保留条数、提示词中展示的最近事件数、关系摘要数、关系标签上限。
 - `FAVOR_RANK_CARD_ENABLED` / `FAVOR_RANK_LIMIT` / `FAVOR_RANK_HIDE_EMPTY` / `FAVOR_RANK_CARD_FONT` / `FAVOR_RANK_AVATAR`：排行榜卡片。
