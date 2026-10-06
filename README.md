@@ -85,8 +85,32 @@ nekro-agent/
 - `FAVOR_RANK_CARD_ENABLED` / `FAVOR_RANK_LIMIT` / `FAVOR_RANK_HIDE_EMPTY` / `FAVOR_RANK_CARD_FONT` / `FAVOR_RANK_AVATAR`：排行榜卡片。
 - `FAVOR_RANK_KEYWORD_ENABLED` / `FAVOR_RANK_KEYWORDS`：无前缀关键词触发排行榜（默认开，词表 `查看好感度,好感榜`）。
 - `FAVOR_RANK_AI_TRIGGER_ENABLED`：把「查看好感度排行榜」工具交给 AI，让自然语言也能查榜单（默认开）。
-- `WEBUI_ACCESS_KEY`：好感度管理页的免登录访问密钥（留空则只能用 NekroAgent 管理员身份访问）。
+- `WEBUI_ACCESS_KEY`：好感度管理页的免登录访问密钥（留空则只能用 NekroAgent 管理员身份访问）。自己定一串字符即可，**没有「申请 / 生成」这一步**。
 - `CLEAR_MEMORY_ON_CHANNEL_RESET`：开启后，在面板重置频道会同时清除该频道的全部记忆与关系档案（默认关闭）。
+
+## 关系管理页
+
+浏览器打开（注意**没有** `/api` 前缀，加上会 404）：
+
+```text
+http://<面板地址>:8021/plugins/luoxiQAQ.nekro_memory_angel/ui
+```
+
+鉴权满足任意一条即可：
+
+1. **先在 NekroAgent 面板登录**，再打开本页——页面会自己读取面板的登录态（`localStorage` 里的
+   `auth-storage`），什么都不用填。最省事、也最安全。
+2. **在页面输入框里填 `WEBUI_ACCESS_KEY`**——页面会认出这是密钥而不是 chat_key，把它记在本机
+   浏览器里，并列出所有有数据的频道供点选。
+3. **把密钥拼进网址**：`.../ui?key=<那串>`。页面读到后会立刻把它从地址栏抹掉，
+   避免留在浏览器历史和分享链接里。
+
+页面能力：填 `chat_key` 看单个频道、填访问密钥看频道列表；`?chat_key=xxx` 打开即自动载入；
+「自动刷新」勾选框（默认开，5 秒轮询，数据没变不重绘）；「清空本频道」按钮（双重确认，
+只影响该频道）；行内可设定阶段、记录关系事件、删除单个档案。
+
+> ⚠️ 面板端口若对公网开放，带 `?key=` 的网址一旦泄露就等于一个长期有效的免登录入口。
+> 优先用第 1 种方式。
 
 ## 许可证
 

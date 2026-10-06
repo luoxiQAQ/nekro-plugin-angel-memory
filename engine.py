@@ -99,9 +99,37 @@ class AngelMemoryEngine:
     def _lock_for(self, chat_key: str) -> asyncio.Lock:
         return self._chat_locks.setdefault(chat_key, asyncio.Lock())
 
+    @staticmethod
+    async def _context_start_epoch(chat_key: str) -> int:
+        """本频道「当前上下文」的起点时间戳。
+
+        框架的 `/reset` 只做一件事：把 `DBChatChannel.conversation_start_time` 推到当下，
+        聊天记录检索的边界就靠它。取不到（频道不存在 / 字段缺失）时返回 0，表示不过滤。
+        """
+        try:
+            channel = await DBChatChannel.get(chat_key=chat_key)
+            return int(channel.conversation_start_time.timestamp())
+        except Exception:
+            return 0
+
+    @classmethod
+    async def _context_filters(cls, chat_key: str) -> dict[str, Any]:
+        """聊天记录查询的过滤条件：不早于本频道上下文的起点。
+
+        不加这层过滤的话，`/reset` 之后插件仍会把重置前的对话捞回来当短期记忆，
+        甚至进一步提炼成长期记忆，等于没重置。
+        """
+        filters: dict[str, Any] = {"chat_key": chat_key}
+        since = await cls._context_start_epoch(chat_key)
+        if since > 0:
+            filters["send_timestamp__gte"] = since
+        return filters
+
     # ------------------------------------------------------------ 短期层
 
     async def latest_user_query(self, chat_key: str) -> tuple[str, str]:
+        # 有意**不**按上下文起点过滤：这里要的就是「用户刚刚说的那句话」，
+        # 它必然在重置之后，加上过滤只会多一次查询。
         row = await DBChatMessage.filter(chat_key=chat_key).exclude(sender_id="-1").order_by("-id").first()
         if row is None:
             return "", ""
@@ -109,7 +137,8 @@ class AngelMemoryEngine:
 
     async def recent_window(self, chat_key: str, *, limit: int, msg_chars: int) -> list[str]:
         """短期记忆：最近若干条原始对话的滑动窗口（不落库，每轮重建）。"""
-        rows = await DBChatMessage.filter(chat_key=chat_key).order_by("-id").limit(max(2, int(limit)))
+        filters = await self._context_filters(chat_key)
+        rows = await DBChatMessage.filter(**filters).order_by("-id").limit(max(2, int(limit)))
         if not rows:
             return []
         lines: list[str] = []
@@ -505,7 +534,8 @@ class AngelMemoryEngine:
 
     async def consolidate(self, chat_key: str) -> dict[str, int]:
         async with self._lock_for(chat_key):
-            messages = await DBChatMessage.filter(chat_key=chat_key).order_by("-id").limit(config.CONSOLIDATION_HISTORY_LIMIT)
+            filters = await self._context_filters(chat_key)
+            messages = await DBChatMessage.filter(**filters).order_by("-id").limit(config.CONSOLIDATION_HISTORY_LIMIT)
             if not messages:
                 return {"created": 0, "merged": 0, "facts": 0, "digests": 0}
             messages = list(reversed(messages))

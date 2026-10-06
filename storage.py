@@ -727,6 +727,45 @@ class AngelMemoryStorage:
         with self.connect() as connection:
             self._set_state(connection, key, str(value))
 
+    #: 参与「频道枚举」的数据表
+    _CHANNEL_TABLES: tuple[str, ...] = (
+        "memories",
+        "notes",
+        "user_profiles",
+        "soul_states",
+        "favorability",
+        "facts",
+        "digests",
+    )
+
+    def list_channel_summary(self) -> list[dict[str, Any]]:
+        """列出所有频道及其数据量，供 WebUI「填密钥后选频道」用。
+
+        只挑两个用户最关心的维度做展示：好感度档案数、长期记忆条数；
+        其余表（笔记 / 画像 / 灵魂状态 / 事实 / 梗概）只用来判断「这个频道有没有数据」。
+        """
+        counters: dict[str, dict[str, int]] = {}
+        with self.connect() as connection:
+            for table in self._CHANNEL_TABLES:
+                rows = connection.execute(f"SELECT chat_key, COUNT(*) AS n FROM {table} GROUP BY chat_key")
+                for row in rows:
+                    key = str(row["chat_key"] or "").strip()
+                    if not key:
+                        continue
+                    bucket = counters.setdefault(key, {})
+                    bucket[table] = bucket.get(table, 0) + int(row["n"])
+        summary = [
+            {
+                "chat_key": key,
+                "favor_count": bucket.get("favorability", 0),
+                "memory_count": bucket.get("memories", 0),
+                "total_count": sum(bucket.values()),
+            }
+            for key, bucket in counters.items()
+        ]
+        summary.sort(key=lambda item: (-item["total_count"], item["chat_key"]))
+        return summary
+
     def maintenance(self, *, archive_after_days: int, archive_threshold: float, max_memories_per_scope: int) -> dict[str, int]:
         now = time.time()
         archived = 0

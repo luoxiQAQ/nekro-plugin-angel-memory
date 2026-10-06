@@ -161,10 +161,9 @@ def create_router() -> APIRouter:
         return result
 
     @router.post("/reset")
-    @require_role(Role.Admin)
     async def reset_data(
         chat_key: str = "",
-        _current_user=Depends(get_current_active_user),
+        _guard=Depends(_favor_access),
     ) -> dict[str, Any]:
         if chat_key.strip():
             return await asyncio.to_thread(storage.reset_channel, chat_key.strip())
@@ -183,6 +182,15 @@ def create_router() -> APIRouter:
             body.memories,
             default_chat_key=body.default_chat_key,
         )
+
+    @router.get("/channels")
+    async def list_channels(_guard=Depends(_favor_access)) -> dict[str, Any]:
+        """列出所有有数据的频道，供 WebUI 在「只填了密钥、没填 chat_key」时选频道。
+
+        与 /favor 同一套鉴权：`?key=` 或管理员令牌都行。
+        """
+        items = await asyncio.to_thread(storage.list_channel_summary)
+        return {"items": items}
 
     # ------------------------------------------------------------ 好感度
 
