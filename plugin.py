@@ -7,10 +7,13 @@ plugin = NekroPlugin(
     name="天使记忆",
     module_name="nekro_memory_angel",
     description="分层长期记忆、滑动窗口短期记忆、结构化事实、回忆、用户画像、灵魂状态与事件驱动关系状态机",
-    version="1.4.0",
+    version="1.5.0",
     author="luoxiQAQ",
     url="https://github.com/luoxiQAQ/nekro-plugin-angel-memory",
     allow_sleep=False,
+    # 面板插件详情页的「页面」Tab：框架会把 web/ 目录作为静态根，
+    # 用同源 iframe 内嵌 /plugins/<key>/__webui__/favor.html（无需额外鉴权）。
+    webui_path="web/favor.html",
 )
 
 

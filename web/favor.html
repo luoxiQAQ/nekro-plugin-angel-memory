@@ -3,122 +3,710 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>天使记忆 · 关系状态机管理</title>
+<title>天使记忆 · 控制台</title>
 <style>
   :root {
     --bg: #f7f4ef;
+    --bg-2: #efeae2;
     --panel: #ffffff;
+    --panel-2: #fbf9f6;
     --border: #e8e1d8;
+    --border-soft: #f1ece5;
     --text: #3c3630;
+    --text-strong: #26211d;
     --sub: #8d867e;
-    --red: #e34c4c;
-    --green: #3aa36a;
-    --red-soft: #fdeeea;
+    --sub-2: #a9a29a;
     --accent: #d97757;
+    --accent-deep: #c05f3e;
+    --accent-soft: #fbf1ec;
+    --red: #e34c4c;
+    --red-soft: #fdeeea;
+    --green: #3aa36a;
+    --green-soft: #e9f5ee;
+    --amber: #c98a20;
+    --amber-soft: #fdf4e3;
+    --shadow-sm: 0 1px 2px rgba(60, 54, 48, .05);
+    --shadow: 0 1px 2px rgba(60, 54, 48, .05), 0 10px 28px rgba(60, 54, 48, .07);
+    --radius: 14px;
+    --radius-sm: 10px;
+    --topbar-h: 62px;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    margin: 0; padding: 24px;
-    background: var(--bg); color: var(--text);
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
   }
-  h1 { font-size: 20px; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
-  h1::before { content: ""; width: 6px; height: 20px; border-radius: 3px; background: var(--red); }
-  .muted { color: var(--sub); font-size: 12px; }
-  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px 0; }
-  input[type=text] {
-    flex: 1 1 320px; min-width: 220px; padding: 9px 12px;
-    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
-    color: var(--text); font-size: 13px;
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .sprite { display: none; }
+  .ico { width: 16px; height: 16px; flex: 0 0 auto; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .ico-lg { width: 20px; height: 20px; }
+
+  /* ---------------------------------------------------------------- 顶栏 */
+  .app { min-height: 100vh; display: flex; flex-direction: column; }
+  .topbar {
+    position: sticky; top: 0; z-index: 40;
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 20px; min-height: var(--topbar-h);
+    background: rgba(255, 255, 255, .9);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
   }
-  button.chan {
-    display: block; width: 100%; text-align: left; margin-bottom: 6px;
-    font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+  .brand-mark {
+    width: 36px; height: 36px; border-radius: 11px; flex: 0 0 auto;
+    background: linear-gradient(150deg, var(--accent) 0%, #e39a7c 100%);
+    color: #fff; display: grid; place-items: center;
+    box-shadow: 0 4px 12px rgba(217, 119, 87, .3);
   }
+  .brand-text { min-width: 0; }
+  .brand-title { font-size: 15px; font-weight: 600; color: var(--text-strong); letter-spacing: .2px; }
+  .brand-meta {
+    font-size: 11px; color: var(--sub-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .topbar-spacer { flex: 1 1 auto; }
+  .topbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 11px; border-radius: 999px; font-size: 12px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--sub);
+  }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--sub-2); }
+  .pill.ok { color: var(--green); border-color: #cfe9da; background: var(--green-soft); }
+  .pill.ok .dot { background: var(--green); }
+  .pill.warn { color: var(--amber); border-color: #f0dfb8; background: var(--amber-soft); }
+  .pill.warn .dot { background: var(--amber); }
+  .pill.bad { color: var(--red); border-color: #f6cfc9; background: var(--red-soft); }
+  .pill.bad .dot { background: var(--red); }
+
+  select, input[type=text], input[type=number], textarea {
+    font-family: inherit; font-size: 13px; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 7px 10px; outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  select:focus, input:focus, textarea:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px rgba(217, 119, 87, .12);
+  }
+  select { cursor: pointer; max-width: 340px; }
+  textarea { resize: vertical; min-height: 74px; width: 100%; }
+
   button {
-    padding: 9px 14px; border-radius: 10px; border: 1px solid var(--border);
-    background: var(--panel); color: var(--text); cursor: pointer; font-size: 13px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    font-family: inherit; font-size: 13px; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 7px 13px; cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s, transform .06s;
+    white-space: nowrap;
   }
-  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:hover { border-color: var(--accent); color: var(--accent-deep); }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button:disabled:hover { border-color: var(--border); color: var(--text); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.primary:hover { opacity: .9; color: #fff; }
-  button.danger:hover { border-color: var(--red); color: var(--red); }
-  .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
-  .stats { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 12px; }
-  .stats div { font-size: 12px; color: var(--sub); }
-  .stats b { display: block; font-size: 18px; color: var(--text); font-weight: 600; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid #f1ece5; vertical-align: middle; }
-  th { font-size: 12px; color: var(--sub); font-weight: 500; }
-  td.score { font-weight: 600; }
-  td.score.up { color: var(--red); }
-  td.score.down { color: var(--green); }
+  button.primary:hover { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
+  button.ghost { background: transparent; border-color: transparent; color: var(--sub); padding: 6px 8px; }
+  button.ghost:hover { background: var(--accent-soft); color: var(--accent-deep); }
+  button.danger { color: var(--red); border-color: #f2d5d1; }
+  button.danger:hover { background: var(--red-soft); border-color: var(--red); color: var(--red); }
+  button.tiny { padding: 4px 9px; font-size: 12px; border-radius: 8px; }
+
+  /* -------------------------------------------------------------- 主体布局 */
+  .body { flex: 1 1 auto; display: grid; grid-template-columns: 218px minmax(0, 1fr); align-items: start; }
+  .sidebar {
+    position: sticky; top: var(--topbar-h);
+    height: calc(100vh - var(--topbar-h));
+    overflow-y: auto; padding: 16px 12px 24px;
+    background: var(--panel-2); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .side-label {
+    font-size: 11px; letter-spacing: .12em; color: var(--sub-2);
+    padding: 4px 10px 8px; text-transform: uppercase;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 11px; border-radius: var(--radius-sm);
+    color: var(--text); cursor: pointer; border: 1px solid transparent;
+    font-size: 13.5px; transition: background .15s, color .15s, border-color .15s;
+  }
+  .nav-item:hover { background: var(--accent-soft); color: var(--accent-deep); }
+  .nav-item.active {
+    background: var(--panel); color: var(--accent-deep);
+    border-color: var(--border); box-shadow: var(--shadow-sm); font-weight: 600;
+  }
+  .nav-item.active .ico { color: var(--accent); }
+  .nav-count {
+    margin-left: auto; font-size: 11px; color: var(--sub-2);
+    background: var(--bg-2); border-radius: 999px; padding: 1px 7px;
+    font-variant-numeric: tabular-nums;
+  }
+  .nav-item.active .nav-count { background: var(--accent-soft); color: var(--accent-deep); }
+  .side-foot {
+    margin-top: auto; padding: 12px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); font-size: 11.5px; color: var(--sub);
+  }
+  .side-foot b { display: block; color: var(--text); font-size: 12.5px; margin-bottom: 3px; }
+
+  .main { padding: 22px 26px 72px; min-width: 0; }
+  .page { display: none; }
+  .page.active { display: block; animation: fade .18s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .page-head { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
+  .page-head h2 { margin: 0; font-size: 19px; font-weight: 600; color: var(--text-strong); letter-spacing: .2px; }
+  .page-head p { margin: 2px 0 0; font-size: 12.5px; color: var(--sub); max-width: 620px; }
+  .page-head .spacer { flex: 1 1 auto; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow-sm);
+  }
+  .card-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 13px 16px; border-bottom: 1px solid var(--border-soft);
+  }
+  .card-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text-strong); }
+  .card-head .sub { font-size: 11.5px; color: var(--sub); }
+  .card-head .spacer { flex: 1 1 auto; }
+  .card-body { padding: 14px 16px; }
+
+  /* 指标卡 */
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .metric {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px 15px; position: relative; box-shadow: var(--shadow-sm); overflow: hidden;
+  }
+  .metric::after {
+    content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
+    background: var(--accent); opacity: .85;
+  }
+  .metric.tone-red::after { background: var(--red); }
+  .metric.tone-green::after { background: var(--green); }
+  .metric.tone-amber::after { background: var(--amber); }
+  .metric.tone-plain::after { background: var(--border); }
+  .metric-label { font-size: 11.5px; color: var(--sub); display: flex; align-items: center; gap: 6px; }
+  .metric-value {
+    font-size: 24px; font-weight: 650; color: var(--text-strong);
+    line-height: 1.25; margin: 4px 0 2px; font-variant-numeric: tabular-nums;
+  }
+  .metric-value small { font-size: 12px; font-weight: 400; color: var(--sub-2); margin-left: 3px; }
+  .metric-hint { font-size: 11.5px; color: var(--sub-2); }
+  .metric-dot { position: absolute; top: 13px; right: 14px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .metric.tone-red .metric-dot { background: var(--red); }
+  .metric.tone-green .metric-dot { background: var(--green); }
+  .metric.tone-amber .metric-dot { background: var(--amber); }
+  .metric.tone-plain .metric-dot { background: var(--border); }
+
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; align-items: start; }
+
+  /* 键值行 */
+  .kv { display: flex; align-items: baseline; gap: 12px; padding: 7px 0; border-bottom: 1px dashed var(--border-soft); font-size: 13px; }
+  .kv:last-child { border-bottom: none; }
+  .kv .k { color: var(--sub); flex: 0 0 auto; min-width: 96px; }
+  .kv .v { margin-left: auto; text-align: right; color: var(--text); font-weight: 500; }
+  .kv .v.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  .kv .v.on { color: var(--green); }
+  .kv .v.off { color: var(--sub-2); }
+  .kv .v.warn { color: var(--amber); }
+
+  /* 表格 */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 10px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+  th {
+    font-size: 11.5px; color: var(--sub); font-weight: 500; white-space: nowrap;
+    background: var(--panel-2); position: sticky; top: 0; z-index: 1;
+  }
+  tbody tr:hover { background: var(--panel-2); }
+  tbody tr.clickable { cursor: pointer; }
+  td.num { font-variant-numeric: tabular-nums; }
+  td.actions { white-space: nowrap; text-align: right; }
+  .cell-name { font-weight: 500; color: var(--text-strong); }
+  .cell-sub { font-size: 11.5px; color: var(--sub-2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .clamp { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wrap-anywhere { overflow-wrap: anywhere; }
+
+  .badge {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    font-size: 11.5px; background: var(--bg-2); color: var(--sub); white-space: nowrap;
+  }
+  .badge.up { background: var(--red-soft); color: var(--red); }
+  .badge.down { background: var(--green-soft); color: var(--green); }
+  .badge.mid { background: var(--bg-2); color: var(--sub); }
+  .badge.accent { background: var(--accent-soft); color: var(--accent-deep); }
+  .badge.amber { background: var(--amber-soft); color: var(--amber); }
   .tag {
-    display: inline-block; margin: 1px 4px 1px 0; padding: 1px 8px; border-radius: 9px;
-    background: var(--red-soft); color: var(--accent); font-size: 11px;
+    display: inline-block; margin: 1px 4px 1px 0; padding: 1px 8px;
+    border-radius: 9px; background: var(--accent-soft); color: var(--accent-deep); font-size: 11px;
   }
-  .stage { display: inline-block; padding: 1px 9px; border-radius: 9px; font-size: 12px; background: #f3efe9; color: var(--sub); }
-  .stage.up { background: var(--red-soft); color: var(--red); }
-  .stage.down { background: #e9f5ee; color: var(--green); }
-  .evidence { font-size: 12px; color: var(--sub); }
-  img#card { max-width: 100%; border-radius: 12px; border: 1px solid var(--border); display: none; }
-  .empty { color: var(--sub); padding: 20px 0; text-align: center; }
+  .score { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .score.up { color: var(--red); }
+  .score.down { color: var(--green); }
+  .muted { color: var(--sub); }
+  .muted-2 { color: var(--sub-2); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .nowrap { white-space: nowrap; }
+  .right { text-align: right; }
+
+  /* 进度条 */
+  .bar { height: 6px; border-radius: 999px; background: var(--bg-2); overflow: hidden; min-width: 64px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s; }
+  .bar > i.up { background: var(--red); }
+  .bar > i.down { background: var(--green); }
+
+  /* 阶段分布 */
+  .dist-row { display: grid; grid-template-columns: 74px minmax(0, 1fr) 78px; align-items: center; gap: 12px; padding: 6px 0; font-size: 13px; }
+  .dist-row .bar { height: 8px; }
+  .dist-row .n { text-align: right; color: var(--sub); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  .empty { padding: 30px 12px; text-align: center; color: var(--sub-2); font-size: 13px; }
+  .empty .ico { width: 26px; height: 26px; opacity: .45; margin-bottom: 8px; }
+
+  .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .toolbar .grow { flex: 1 1 200px; min-width: 160px; }
+  .search-box { position: relative; display: flex; align-items: center; }
+  .search-box .ico { position: absolute; left: 10px; color: var(--sub-2); pointer-events: none; }
+  .search-box input { padding-left: 32px; width: 100%; }
+
+  .subtabs { display: inline-flex; gap: 3px; padding: 3px; background: var(--bg-2); border-radius: 11px; }
+  .subtabs button { border: none; background: transparent; padding: 6px 14px; border-radius: 9px; color: var(--sub); font-size: 12.5px; }
+  .subtabs button:hover { color: var(--accent-deep); }
+  .subtabs button.active { background: var(--panel); color: var(--accent-deep); font-weight: 600; box-shadow: var(--shadow-sm); }
+
+  .banner {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 12px 14px; border-radius: var(--radius);
+    background: var(--amber-soft); border: 1px solid #f0dfb8; color: #8a5f14;
+    font-size: 12.5px; margin-bottom: 16px;
+  }
+  .banner.bad { background: var(--red-soft); border-color: #f6cfc9; color: #a33535; }
+  .banner .ico { margin-top: 2px; flex: 0 0 auto; }
+  .banner .grow { flex: 1 1 auto; }
+  .banner .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+
+  /* 侧滑详情 */
+  .drawer-mask {
+    position: fixed; inset: 0; background: rgba(60, 54, 48, .28);
+    opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 60;
+  }
+  .drawer-mask.show { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 94vw);
+    background: var(--panel); border-left: 1px solid var(--border);
+    box-shadow: -12px 0 40px rgba(60, 54, 48, .12);
+    transform: translateX(102%); transition: transform .24s cubic-bezier(.3, .8, .3, 1);
+    z-index: 61; display: flex; flex-direction: column;
+  }
+  .drawer.show { transform: none; }
+  .drawer-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border-soft); }
+  .drawer-head h3 { margin: 0; font-size: 16px; color: var(--text-strong); }
+  .drawer-body { flex: 1 1 auto; overflow-y: auto; padding: 16px 18px; }
+  .drawer-foot { padding: 12px 18px; border-top: 1px solid var(--border-soft); display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .section-title { font-size: 12px; color: var(--sub); margin: 18px 0 8px; display: flex; align-items: center; gap: 8px; }
+  .section-title:first-child { margin-top: 0; }
+  .section-title::after { content: ""; flex: 1 1 auto; height: 1px; background: var(--border-soft); }
+
+  .timeline { display: flex; flex-direction: column; gap: 10px; }
+  .tl-item { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 10px; }
+  .tl-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 7px; background: var(--sub-2); }
+  .tl-dot.up { background: var(--red); }
+  .tl-dot.down { background: var(--green); }
+  .tl-body { border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 9px 11px; background: var(--panel-2); }
+  .tl-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+  .tl-time { margin-left: auto; font-size: 11px; color: var(--sub-2); }
+  .tl-evidence { font-size: 12.5px; color: var(--sub); margin-top: 3px; overflow-wrap: anywhere; }
+  .tl-move { font-size: 11.5px; color: var(--sub-2); margin-top: 4px; }
+
+  /* 弹窗 */
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(60, 54, 48, .32);
+    display: none; align-items: center; justify-content: center; z-index: 80; padding: 20px;
+  }
+  .modal-mask.show { display: flex; }
+  .modal {
+    width: min(520px, 100%); max-height: 88vh; overflow-y: auto;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 16px; box-shadow: var(--shadow);
+  }
+  .modal-head { padding: 16px 18px 0; }
+  .modal-head h3 { margin: 0; font-size: 16px; color: var(--text-strong); }
+  .modal-head p { margin: 4px 0 0; font-size: 12.5px; color: var(--sub); }
+  .modal-body { padding: 14px 18px; display: flex; flex-direction: column; gap: 14px; }
+  .modal-foot { padding: 0 18px 16px; display: flex; gap: 8px; justify-content: flex-end; }
+  .field label { display: block; font-size: 12.5px; color: var(--sub); margin-bottom: 5px; }
+  .field select, .field input { width: 100%; }
+  .field .hint { font-size: 11.5px; color: var(--sub-2); margin-top: 5px; }
+  .radio-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .radio-row label {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 7px 12px; font-size: 12.5px; color: var(--text); margin: 0;
+  }
+  .radio-row label:hover { border-color: var(--accent); }
+  .radio-row input { accent-color: var(--accent); }
+  .radio-row label.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-deep); }
+
   #toast {
-    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
-    background: #3c3630; color: #fff; padding: 9px 16px; border-radius: 10px;
-    font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none;
-    max-width: 80vw; white-space: pre-wrap;
+    position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%) translateY(8px);
+    background: #3c3630; color: #fff; padding: 10px 18px; border-radius: 11px;
+    font-size: 13px; opacity: 0; transition: opacity .2s, transform .2s;
+    pointer-events: none; max-width: 78vw; white-space: pre-wrap; z-index: 90;
+    box-shadow: 0 8px 28px rgba(60, 54, 48, .28);
   }
-  #toast.show { opacity: 1; }
+  #toast.show { opacity: 1; transform: translateX(-50%); }
+
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 900px) {
+    .body { grid-template-columns: minmax(0, 1fr); }
+    .sidebar {
+      position: static; height: auto; flex-direction: row; align-items: center;
+      overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border);
+      padding: 10px 12px; gap: 6px;
+    }
+    .side-label, .side-foot, .nav-count { display: none; }
+    .nav-item { white-space: nowrap; }
+    .main { padding: 18px 14px 60px; }
+    .topbar { flex-wrap: wrap; }
+    .topbar-spacer { display: none; }
+    .topbar-actions { width: 100%; justify-content: flex-start; }
+  }
 </style>
 </head>
 <body>
-  <h1>天使记忆 · 关系状态机管理</h1>
-  <div class="muted" id="hint">关系由「事件」驱动：阶段跃迁需要证据权重 + 事件种类多样性 + 最短停留时间。展示分只是投影。</div>
 
-  <div class="bar">
-    <input type="text" id="chatKey"
-           placeholder="chat_key（如 onebot_v11-3692682071:group_1050507404），或直接填访问密钥 WEBUI_ACCESS_KEY" />
-    <button class="primary" id="loadBtn">载入</button>
-    <button id="cardBtn">生成排行榜卡片</button>
-    <button id="erodeBtn">证据衰减结算</button>
-    <button class="danger" id="wipeBtn">清空本频道</button>
-    <label style="font-size:12px;color:var(--sub);display:flex;align-items:center;gap:6px">
-      <input type="checkbox" id="autoChk" checked /> 自动刷新
-    </label>
-  </div>
-  <div class="muted" id="keyState" style="margin:-6px 0 12px"></div>
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="9" cy="7" r="3.2"/><path d="M22 20v-1.5a4 4 0 0 0-3-3.87"/><path d="M16.5 4.2a3.2 3.2 0 0 1 0 6"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 8-4-16-3 8H2"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+  <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0 5 5l-9 9a2.8 2.8 0 0 1-4-4l9-9z"/><path d="M14.7 6.3 18 3l3 3-3.3 3.3"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 5.6a5 5 0 0 0-7.1 0L12 7.3l-1.7-1.7a5 5 0 1 0-7.1 7.1L12 21l8.8-8.3a5 5 0 0 0 0-7.1z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 8.3-8.3M17 6l2.5 2.5M14.5 8.5 17 11"/></symbol>
+</svg>
 
-  <div class="layout">
-    <div class="panel">
-      <div class="stats">
-        <div>档案总数<b id="statTotal">-</b></div>
-        <div>正面阶段<b id="statPositive">-</b></div>
-        <div>负面阶段<b id="statNegative">-</b></div>
-        <div>累计事件<b id="statEvents">-</b></div>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><svg class="ico ico-lg"><use href="#i-heart"/></svg></div>
+      <div class="brand-text">
+        <div class="brand-title" id="brandTitle">天使记忆</div>
+        <div class="brand-meta" id="brandMeta">luoxiQAQ.nekro_memory_angel</div>
       </div>
-      <div id="tableWrap"><div class="empty">填 chat_key 或访问密钥后点「载入」</div></div>
     </div>
-    <div class="panel">
-      <div class="muted" style="margin-bottom:10px">排行榜卡片预览</div>
-      <img id="card" alt="好感度排行榜卡片" />
-      <div class="empty" id="cardEmpty">点「生成排行榜卡片」查看效果</div>
-    </div>
-  </div>
 
-  <div id="toast"></div>
+    <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">连接中…</span></span>
+
+    <div class="topbar-spacer"></div>
+
+    <div class="topbar-actions">
+      <select id="channelSelect" title="选择频道" disabled><option>读取频道…</option></select>
+      <button id="btnRefresh" title="重新载入当前频道的全部数据"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
+      <button id="btnOpen" title="在新标签页打开（独立页面，适合投屏或分享）"><svg class="ico"><use href="#i-external"/></svg>在新页面打开</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <aside class="sidebar">
+      <div class="side-label">工作区</div>
+      <div class="nav-item active" data-page="overview"><svg class="ico"><use href="#i-grid"/></svg>概览<span class="nav-count" id="cntChannels">-</span></div>
+      <div class="nav-item" data-page="favor"><svg class="ico"><use href="#i-users"/></svg>好感度档案<span class="nav-count" id="cntFavor">-</span></div>
+      <div class="nav-item" data-page="events"><svg class="ico"><use href="#i-activity"/></svg>关系事件<span class="nav-count" id="cntEvents">-</span></div>
+      <div class="nav-item" data-page="memory"><svg class="ico"><use href="#i-book"/></svg>记忆与笔记<span class="nav-count" id="cntMemories">-</span></div>
+      <div class="nav-item" data-page="rules"><svg class="ico"><use href="#i-sliders"/></svg>规则与门控</div>
+      <div class="nav-item" data-page="maintain"><svg class="ico"><use href="#i-wrench"/></svg>数据维护</div>
+      <div class="side-foot">
+        <b>本地管理面板</b>
+        配置保存后立即生效；本页数据来自插件数据库，只读展示 + 少量人工干预。
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <div id="authBanner"></div>
+
+      <!-- ============================================================ 概览 -->
+      <section class="page active" data-page="overview">
+        <div class="page-head">
+          <div>
+            <h2>概览</h2>
+            <p>查看当前频道的记忆体量、关系状态与门控规则的实际生效情况。</p>
+          </div>
+          <div class="spacer"></div>
+          <button id="btnOverviewCard"><svg class="ico"><use href="#i-image"/></svg>生成排行榜卡片</button>
+        </div>
+        <div class="metrics" id="metrics"></div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head">
+              <h3>关系衰减</h3>
+              <div class="spacer"></div>
+              <span class="badge accent" id="decayState">—</span>
+            </div>
+            <div class="card-body" id="decayBody"><div class="empty">读取中…</div></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h3>门控与安全</h3>
+              <div class="spacer"></div>
+              <span class="badge accent" id="gateState">—</span>
+            </div>
+            <div class="card-body" id="gateBody"><div class="empty">读取中…</div></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-head">
+            <h3>关系阶段分布</h3>
+            <div class="spacer"></div>
+            <span class="sub" id="distSub">—</span>
+          </div>
+          <div class="card-body" id="distBody"><div class="empty">读取中…</div></div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-head">
+            <h3>记忆分层体量</h3>
+            <div class="spacer"></div>
+            <span class="sub">当前频道</span>
+          </div>
+          <div class="card-body" id="layerBody"><div class="empty">读取中…</div></div>
+        </div>
+      </section>
+
+      <!-- ==================================================== 好感度档案 -->
+      <section class="page" data-page="favor">
+        <div class="page-head">
+          <div>
+            <h2>好感度档案</h2>
+            <p>权威状态是「阶段 + 阶段内证据」，展示分只是投影。点任意一行查看事件流水与证据构成。</p>
+          </div>
+          <div class="spacer"></div>
+          <button id="btnNewProfile"><svg class="ico"><use href="#i-plus"/></svg>新建 / 设定档案</button>
+          <button id="btnCardFavor"><svg class="ico"><use href="#i-image"/></svg>排行榜卡片</button>
+        </div>
+        <div class="toolbar">
+          <div class="search-box grow">
+            <svg class="ico"><use href="#i-search"/></svg>
+            <input type="text" id="favorFilter" placeholder="按昵称、ID 或标签筛选…" />
+          </div>
+          <select id="favorSort">
+            <option value="score">按展示分排序</option>
+            <option value="events">按事件数排序</option>
+            <option value="recent">按最近互动排序</option>
+            <option value="stage">按阶段排序</option>
+            <option value="name">按昵称排序</option>
+          </select>
+          <label class="muted nowrap" style="font-size:12.5px;display:inline-flex;align-items:center;gap:6px">
+            <input type="checkbox" id="hideEmpty" /> 隐藏空档案
+          </label>
+        </div>
+        <div class="card"><div class="table-wrap" id="favorTable"><div class="empty">载入中…</div></div></div>
+      </section>
+
+      <!-- ======================================================== 关系事件 -->
+      <section class="page" data-page="events">
+        <div class="page-head">
+          <div>
+            <h2>关系事件</h2>
+            <p>一切关系变化都由事件驱动。这里可以查历史流水，也可以人工补录一次事件。</p>
+          </div>
+          <div class="spacer"></div>
+          <button class="primary" id="btnRecordEvent"><svg class="ico"><use href="#i-plus"/></svg>记录关系事件</button>
+        </div>
+        <div class="toolbar">
+          <select id="eventUser" class="grow"><option>请先选择用户…</option></select>
+          <button id="btnEventReload"><svg class="ico"><use href="#i-refresh"/></svg>重新载入</button>
+        </div>
+        <div class="card"><div class="card-body" id="eventList"><div class="empty">选择一个用户查看其关系事件流水</div></div></div>
+      </section>
+
+      <!-- ======================================================== 记忆与笔记 -->
+      <section class="page" data-page="memory">
+        <div class="page-head">
+          <div>
+            <h2>记忆与笔记</h2>
+            <p>长期记忆、结构化事实与笔记。带 <span class="badge accent">门槛</span> 的条目需要关系阶段达标才会被注入正文。</p>
+          </div>
+          <div class="spacer"></div>
+          <div class="subtabs" id="memTabs">
+            <button class="active" data-tab="memories">长期记忆</button>
+            <button data-tab="facts">结构化事实</button>
+            <button data-tab="notes">笔记</button>
+          </div>
+          <button id="btnMemoryReload"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
+        </div>
+        <div class="toolbar">
+          <div class="search-box grow">
+            <svg class="ico"><use href="#i-search"/></svg>
+            <input type="text" id="memoryFilter" placeholder="在已载入的条目里筛选…" />
+          </div>
+          <span class="muted" style="font-size:12.5px" id="memoryCount">—</span>
+        </div>
+        <div class="card"><div class="table-wrap" id="memoryTable"><div class="empty">载入中…</div></div></div>
+      </section>
+
+      <!-- ====================================================== 规则与门控 -->
+      <section class="page" data-page="rules">
+        <div class="page-head">
+          <div>
+            <h2>规则与门控</h2>
+            <p>这里显示的是<strong>代码内规则 + 当前配置的生效值</strong>，只读。要改请到插件详情页的「配置」Tab，保存后本页会自动跟上。</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>阶段与解锁指引</h3>
+            <div class="spacer"></div>
+            <span class="sub">升级侧已放宽，降级侧保持原值</span>
+          </div>
+          <div class="table-wrap" id="stageTable"><div class="empty">载入中…</div></div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-head">
+            <h3>好感度增减参考</h3>
+            <div class="spacer"></div>
+            <span class="sub">事件基准权重 × 严重度系数，再按同类型重复边际递减</span>
+          </div>
+          <div class="table-wrap" id="kindTable"><div class="empty">载入中…</div></div>
+        </div>
+
+        <div class="grid-2" style="margin-top:16px">
+          <div class="card">
+            <div class="card-head"><h3>事件准入约束</h3></div>
+            <div class="card-body" id="limitBody"><div class="empty">载入中…</div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>严重度系数</h3></div>
+            <div class="card-body" id="severityBody"><div class="empty">载入中…</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== 数据维护 -->
+      <section class="page" data-page="maintain">
+        <div class="page-head">
+          <div>
+            <h2>数据维护</h2>
+            <p>结算、维护与危险操作。执行前都会二次确认；清空只影响当前选中的频道。</p>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><h3>常规维护</h3></div>
+            <div class="card-body">
+              <div class="kv"><span class="k">当前频道</span><span class="v mono" id="mtChatKey">—</span></div>
+              <div class="kv"><span class="k">数据库</span><span class="v mono" id="mtDb">—</span></div>
+              <div class="kv"><span class="k">全文检索</span><span class="v" id="mtFts">—</span></div>
+              <div class="kv"><span class="k">实例数</span><span class="v" id="mtInstances">—</span></div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+                <button id="btnErode"><svg class="ico"><use href="#i-clock"/></svg>立即结算证据衰减</button>
+                <button id="btnMaintain"><svg class="ico"><use href="#i-layers"/></svg>记忆维护（归档 / 裁剪）</button>
+                <button id="btnExport"><svg class="ico"><use href="#i-download"/></svg>导出全部数据</button>
+              </div>
+              <div class="hint muted-2" style="font-size:11.5px;margin-top:10px">
+                结算与维护是幂等的：没有到期内容时不会改动任何数据。
+              </div>
+            </div>
+          </div>
+          <div class="card" style="border-color:#f2d5d1">
+            <div class="card-head">
+              <h3 style="color:var(--red)">危险操作</h3>
+              <div class="spacer"></div>
+              <svg class="ico" style="color:var(--red)"><use href="#i-alert"/></svg>
+            </div>
+            <div class="card-body">
+              <p class="muted" style="margin:0 0 12px;font-size:12.5px">
+                清空会删除该频道的<strong>全部</strong>数据：长期记忆 / 笔记 / 用户画像 / 灵魂状态 /
+                关键事实 / 近期梗概 / 好感度档案与事件流水。不可恢复，且只影响这一个频道。
+              </p>
+              <button class="danger" id="btnWipe"><svg class="ico"><use href="#i-trash"/></svg>清空当前频道数据</button>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-head"><h3>排行榜卡片预览</h3></div>
+          <div class="card-body" id="cardBody">
+            <div class="empty" id="cardEmpty"><svg class="ico"><use href="#i-image"/></svg><div>点「生成排行榜卡片」查看效果</div></div>
+            <img id="card" alt="好感度排行榜卡片" style="max-width:100%;border-radius:12px;border:1px solid var(--border);display:none" />
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div class="drawer-mask" id="drawerMask"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div style="min-width:0">
+      <h3 id="drawerName">—</h3>
+      <div class="cell-sub" id="drawerId">—</div>
+    </div>
+    <div class="spacer" style="flex:1 1 auto"></div>
+    <button class="ghost" id="drawerClose"><svg class="ico"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+  <div class="drawer-foot">
+    <button id="drawerStage"><svg class="ico"><use href="#i-sliders"/></svg>设定阶段</button>
+    <button id="drawerEvent"><svg class="ico"><use href="#i-plus"/></svg>记录事件</button>
+    <button class="danger" id="drawerDelete"><svg class="ico"><use href="#i-trash"/></svg>删除档案</button>
+  </div>
+</aside>
+
+<div class="modal-mask" id="modalMask"><div class="modal" id="modal"></div></div>
+<div id="toast"></div>
 
 <script>
-const BASE = location.pathname.replace(/\/[^/]*$/, '');
+/* ============================================================================
+ * 天使记忆 · 控制台
+ *
+ * 同一份 HTML 有两个入口：
+ *   1) 面板插件详情页的「页面」Tab  —— 同源 iframe，src = /plugins/<key>/__webui__/favor.html
+ *   2) 独立页面                     —— /plugins/<key>/ui
+ * 两个入口的路径深度不同，所以下面用 PLUGIN_BASE 显式算出接口前缀，不再靠 pathname 剥尾。
+ * ========================================================================== */
+
+const PLUGIN_BASE = (() => {
+  const path = location.pathname;
+  const marker = '/__webui__';
+  const at = path.indexOf(marker);
+  if (at >= 0) return path.slice(0, at);
+  return path.replace(/\/[^/]*$/, '');
+})();
+
 const PARAMS = new URLSearchParams(location.search);
 const KEY_STORE = 'nekro_angel_webui_key';
+const CHAT_STORE = 'nekro_angel_chat_key';
 
 /* 取管理员凭据：优先网址上的 ?token=，否则读面板的登录态。
-   NekroAgent 前端用 zustand persist 把 JWT 存在 localStorage['auth-storage']：
-     {"state":{"token":"<JWT>",...},"version":0}
-   本页与面板同源，所以能直接读到；没登录就返回空串，此时请求会 401。 */
+   内嵌在面板里时与面板同源，能直接读到 zustand persist 的 JWT，因此通常免密钥。 */
 function readAdminToken() {
   const fromUrl = PARAMS.get('token');
   if (fromUrl) return fromUrl;
@@ -132,133 +720,37 @@ function readAdminToken() {
     return '';
   }
 }
+
 const TOKEN = readAdminToken();
-let STAGES = ['排斥', '保留', '中立', '亲近', '偏爱', '特别亲密'];
 
-/* 访问密钥的来源：网址上的 ?key=，或上次记住的值。
-   页面初始化时会把网址上的 ?key= 收进 localStorage 并把它从地址栏抹掉，
-   避免密钥留在浏览器历史、截图和分享链接里。 */
-function readStoredKey() {
-  try { return localStorage.getItem(KEY_STORE) || ''; } catch (error) { return ''; }
+function readStore(key) { try { return localStorage.getItem(key) || ''; } catch (error) { return ''; } }
+function writeStore(key, value) {
+  try { if (value) localStorage.setItem(key, value); else localStorage.removeItem(key); } catch (error) { /* 隐私模式忽略 */ }
 }
 
-function currentKey() {
-  return PARAMS.get('key') || readStoredKey();
-}
+let KEY = PARAMS.get('key') || readStore(KEY_STORE);
 
-function saveKey(value) {
-  try {
-    if (value) localStorage.setItem(KEY_STORE, value);
-    else localStorage.removeItem(KEY_STORE);
-  } catch (error) { /* 隐私模式等场景写不了，忽略即可 */ }
-}
+const S = {
+  page: 'overview',
+  chatKey: readStore(CHAT_STORE),
+  channels: [],
+  meta: null,
+  status: null,
+  favors: [],
+  memories: [],
+  notes: [],
+  facts: [],
+  events: [],
+  activeUser: '',
+  filter: '',
+  memoryFilter: '',
+  memTab: 'memories',
+  autoTimer: null,
+  lastSig: '',
+  loading: false,
+};
 
-function withAuth(query) {
-  const p = new URLSearchParams(query || {});
-  const key = currentKey();
-  if (key) p.set('key', key);
-  if (TOKEN) p.set('token', TOKEN);
-  return p.toString();
-}
-
-const HINT_DEFAULT = '关系由「事件」驱动：阶段跃迁需要证据权重 + 事件种类多样性 + 最短停留时间。展示分只是投影。';
-
-function refreshHint() {
-  const el = document.getElementById('hint');
-  if (currentKey() || TOKEN) { el.textContent = HINT_DEFAULT; return; }
-  el.textContent = '提示：未检测到访问凭据。把插件配置里的 WEBUI_ACCESS_KEY 填进下面的输入框点「载入」即可；'
-    + '或先在 NekroAgent 面板登录后刷新本页（会自动读取登录态）。';
-}
-
-function renderKeyState() {
-  const el = document.getElementById('keyState');
-  if (!currentKey()) { el.textContent = ''; return; }
-  el.innerHTML = '已记住访问密钥（只存在本机浏览器）　'
-    + '<a href="#" id="keyClearLink" style="color:var(--accent)">清除密钥</a>';
-  document.getElementById('keyClearLink').addEventListener('click', event => {
-    event.preventDefault();
-    saveKey('');
-    toast('已清除访问密钥');
-    refreshHint();
-    renderKeyState();
-    document.getElementById('tableWrap').innerHTML =
-      '<div class="empty">密钥已清除。请重新填 chat_key，或把密钥填进输入框点「载入」。</div>';
-  });
-}
-
-/* 探测某个字符串是不是访问密钥：拿它去打 /channels，通得过就把频道清单一起带回来
-   （顺带省掉一次重复请求）。不是密钥则返回 null。 */
-async function probeAsKey(value) {
-  try {
-    const res = await fetch(BASE + '/channels?' + new URLSearchParams({ key: value }).toString());
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (error) {
-    return null;
-  }
-}
-
-/* 把输入框里的那串认成密钥：存下来，之后所有请求都免登录。 */
-function adoptKey(value) {
-  saveKey(value);
-  lastRenderSig = '';
-  toast('已识别为访问密钥，免登录生效');
-  refreshHint();
-  renderKeyState();
-}
-
-/* 只填了密钥、还没指定频道时，列出本实例下所有有数据的频道供点选。 */
-async function showChannels() {
-  const wrap = document.getElementById('tableWrap');
-  wrap.innerHTML = '<div class="empty">读取频道列表…</div>';
-  try {
-    renderChannels(await api('/channels'));
-  } catch (error) {
-    wrap.innerHTML = `<div class="empty">读取频道列表失败：${esc(error.message)}</div>`;
-  }
-}
-
-function renderChannels(data) {
-  const wrap = document.getElementById('tableWrap');
-  const items = (data && data.items) || [];
-  lastLoadedKey = '';
-  document.getElementById('statTotal').textContent = String(items.length);
-  document.getElementById('statPositive').textContent = '-';
-  document.getElementById('statNegative').textContent = '-';
-  document.getElementById('statEvents').textContent = '-';
-  if (!items.length) {
-    wrap.innerHTML = '<div class="empty">这个实例下还没有任何频道数据。</div>';
-    return;
-  }
-  wrap.innerHTML = `<div class="muted" style="margin-bottom:10px">免登录已生效。共 ${items.length} 个频道，点一个查看：</div>`
-    + items.map(item => `<button class="chan" data-key="${esc(item.chat_key)}">`
-        + `${esc(item.chat_key)}<span class="muted" style="margin-left:8px">好感度 ${item.favor_count} · 记忆 ${item.memory_count}</span>`
-      + '</button>').join('');
-  wrap.querySelectorAll('button.chan').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.getElementById('chatKey').value = btn.dataset.key;
-      load();
-    });
-  });
-}
-
-function toast(msg) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2600);
-}
-
-async function api(path, options) {
-  const url = BASE + path + (path.includes('?') ? '&' : '?') + withAuth();
-  const res = await fetch(url, options);
-  if (!res.ok) {
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch (e) {}
-    throw new Error(detail);
-  }
-  return res.json();
-}
+/* ------------------------------------------------------------------ 工具 */
 
 function esc(text) {
   return String(text == null ? '' : text).replace(/[&<>"']/g, c => (
@@ -266,196 +758,1146 @@ function esc(text) {
   ));
 }
 
-function stageClass(stage) {
-  const index = STAGES.indexOf(stage);
-  if (index >= 3) return 'up';
-  if (index <= 1) return 'down';
-  return '';
+function $(id) { return document.getElementById(id); }
+
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => el.classList.remove('show'), 2800);
 }
 
-let lastLoadedKey = '';
-let lastRenderSig = '';
+function fmtTime(ts) {
+  const value = Number(ts || 0);
+  if (!value) return '—';
+  const d = new Date(value * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
-/* silent = true 时用于自动刷新：不闪「载入中…」，数据没变也不重绘 */
-async function load(silent) {
-  const chatKey = document.getElementById('chatKey').value.trim();
-  if (!chatKey) { if (!silent) toast('请填写 chat_key 或访问密钥'); return; }
-  const wrap = document.getElementById('tableWrap');
+function fmtAgo(ts) {
+  const value = Number(ts || 0);
+  if (!value) return '—';
+  const diff = Date.now() / 1000 - value;
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`;
+  return fmtTime(value);
+}
 
-  /* 输入框里填的正好是访问密钥 → 当成密钥用，列出频道 */
-  if (chatKey === currentKey()) { await showChannels(); return; }
+function fmtHours(hours) {
+  const value = Number(hours || 0);
+  if (!value) return '不自动回落';
+  if (value < 24) return `${value} 小时`;
+  const days = value / 24;
+  return Number.isInteger(days) ? `${days} 天` : `${days.toFixed(1)} 天`;
+}
 
-  if (!silent) wrap.innerHTML = '<div class="empty">载入中…</div>';
+/* 与 fmtHours 分开：停留时长 0 小时就是「刚进入」，不该说成「不自动回落」 */
+function fmtDuration(hours) {
+  const value = Math.max(0, Number(hours) || 0);
+  if (value < 1) return `${Math.round(value * 60)} 分钟`;
+  if (value < 24) return `${value.toFixed(1)} 小时`;
+  return `${(value / 24).toFixed(1)} 天`;
+}
+
+function fmtNum(value, digits) {
+  const n = Number(value || 0);
+  return digits === undefined ? String(Math.round(n)) : n.toFixed(digits);
+}
+
+function clamp01(x) { return Math.max(0, Math.min(1, Number(x) || 0)); }
+
+/* 阶段名 → 等级索引；元信息没到之前用本地兜底表 */
+let STAGE_NAMES = ['排斥', '保留', '中立', '亲近', '偏爱', '特别亲密'];
+function stageIndex(stage) {
+  const at = STAGE_NAMES.indexOf(String(stage));
+  return at >= 0 ? at : 2;
+}
+function stageTone(stage) {
+  const i = stageIndex(stage);
+  if (i <= 1) return 'down';
+  if (i >= 3) return 'up';
+  return 'mid';
+}
+function stageBadge(stage) {
+  return `<span class="badge ${stageTone(stage)}">${esc(stage)}</span>`;
+}
+
+/* -------------------------------------------------------------- 网络层 */
+
+function buildUrl(path, query) {
+  const p = new URLSearchParams(query || {});
+  if (KEY) p.set('key', KEY);
+  if (TOKEN) p.set('token', TOKEN);
+  const qs = p.toString();
+  return PLUGIN_BASE + path + (qs ? '?' + qs : '');
+}
+
+async function api(path, options) {
+  const opts = options || {};
+  const res = await fetch(buildUrl(path, opts.query), {
+    method: opts.method || 'GET',
+    headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const data = await res.json();
+      if (data && data.detail) detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+    } catch (error) { /* 非 JSON 错误体 */ }
+    const err = new Error(detail);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+/* ---------------------------------------------------------------- 鉴权态 */
+
+function hasCredential() { return Boolean(KEY || TOKEN); }
+
+function renderAuthBanner() {
+  const box = $('authBanner');
+  if (hasCredential()) { box.innerHTML = ''; return; }
+  box.innerHTML = `
+    <div class="banner">
+      <svg class="ico"><use href="#i-key"/></svg>
+      <div class="grow">
+        <b>未检测到访问凭据。</b>
+        本页内嵌在 NekroAgent 面板里时应当能自动读取登录态；如果你是在独立标签页打开，请把插件配置里的
+        <code>WEBUI_ACCESS_KEY</code> 填进下面的输入框。
+        <div class="row">
+          <input type="text" id="keyInput" placeholder="WEBUI_ACCESS_KEY" style="min-width:220px" />
+          <button class="primary" id="keySubmit">使用该密钥</button>
+        </div>
+      </div>
+    </div>`;
+  $('keySubmit').addEventListener('click', () => {
+    const value = $('keyInput').value.trim();
+    if (!value) { toast('请先填入访问密钥'); return; }
+    KEY = value;
+    writeStore(KEY_STORE, value);
+    toast('已保存访问密钥');
+    renderAuthBanner();
+    boot(true);
+  });
+}
+
+function setStatus(kind, text) {
+  const pill = $('statusPill');
+  pill.className = 'pill' + (kind ? ' ' + kind : '');
+  $('statusText').textContent = text;
+}
+
+/* ---------------------------------------------------------------- 载入 */
+
+async function loadMeta() {
   try {
-    const data = await api('/favor?' + withAuth({ chat_key: chatKey, hide_empty: 'false' }));
-    const items = data.items || [];
-    lastLoadedKey = chatKey;
-    const sig = JSON.stringify(items);
-    if (silent && sig === lastRenderSig) return;
-    lastRenderSig = sig;
-    if (Array.isArray(data.stages) && data.stages.length) STAGES = data.stages;
-    document.getElementById('statTotal').textContent = items.length;
-    document.getElementById('statPositive').textContent = items.filter(i => STAGES.indexOf(i.stage) >= 3).length;
-    document.getElementById('statNegative').textContent = items.filter(i => STAGES.indexOf(i.stage) <= 1).length;
-    document.getElementById('statEvents').textContent = items.reduce((sum, i) => sum + (i.event_count || 0), 0);
-    if (!items.length) {
-      wrap.innerHTML = '<div class="empty">当前会话还没有建立任何好感度档案。</div>';
-      return;
-    }
-    const rows = items.map((item, index) => {
-      const tags = (item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
-      const cls = stageClass(item.stage);
-      const evidence = `正 ${Number(item.pos_weight || 0).toFixed(1)} / 负 ${Number(item.neg_weight || 0).toFixed(1)}`
-        + `（正向 ${(item.pos_kinds || []).length} 类）`;
-      return `<tr>
-        <td>${index + 1}</td>
-        <td>${esc(item.display_name || item.user_id)}<div class="muted">${esc(item.user_id)}</div></td>
-        <td><span class="stage ${cls}">${esc(item.stage)}</span></td>
-        <td class="score ${cls}">${item.score > 0 ? '+' : ''}${item.score}</td>
-        <td class="evidence">${esc(evidence)}<div class="muted">事件 ${item.event_count || 0} 条</div></td>
-        <td>${tags || '<span class="muted">—</span>'}</td>
-        <td class="muted">${esc(item.last_reason || '—')}</td>
-        <td>
-          <button data-act="stage" data-uid="${esc(item.user_id)}">设定阶段</button>
-          <button data-act="event" data-uid="${esc(item.user_id)}">记录事件</button>
-          <button class="danger" data-act="del" data-uid="${esc(item.user_id)}">删除</button>
-        </td>
-      </tr>`;
-    }).join('');
-    wrap.innerHTML = `<table><thead><tr>
-      <th>#</th><th>用户</th><th>阶段</th><th>展示分</th><th>阶段内证据</th><th>标签</th><th>最近事件</th><th>操作</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
-    wrap.querySelectorAll('button[data-act]').forEach(btn => {
-      btn.addEventListener('click', () => handleRow(btn.dataset.act, btn.dataset.uid, chatKey));
+    const meta = await api('/meta');
+    S.meta = meta;
+    if (Array.isArray(meta.stages) && meta.stages.length) STAGE_NAMES = meta.stages.map(s => s.name);
+    const p = meta.plugin || {};
+    $('brandTitle').textContent = p.name || '天使记忆';
+    $('brandMeta').textContent = `${p.key || ''} · v${p.version || '?'} · ${p.author || ''}`;
+    return true;
+  } catch (error) {
+    S.meta = null;
+    return false;
+  }
+}
+
+async function loadStatus() {
+  try {
+    S.status = await api('/status');
+  } catch (error) {
+    S.status = null;
+  }
+}
+
+async function loadChannels() {
+  try {
+    const data = await api('/channels');
+    S.channels = (data && data.items) || [];
+  } catch (error) {
+    S.channels = [];
+  }
+  renderChannelSelect();
+}
+
+function renderChannelSelect() {
+  const sel = $('channelSelect');
+  const items = S.channels;
+  $('cntChannels').textContent = items.length ? String(items.length) : '0';
+  if (!items.length) {
+    sel.innerHTML = '<option>没有可用频道</option>';
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  sel.innerHTML = items.map(item => {
+    const label = `${item.chat_key}（好感度 ${item.favor_count} · 记忆 ${item.memory_count}）`;
+    return `<option value="${esc(item.chat_key)}">${esc(label)}</option>`;
+  }).join('');
+  const exists = items.some(item => item.chat_key === S.chatKey);
+  if (!exists) S.chatKey = items[0].chat_key;
+  sel.value = S.chatKey;
+}
+
+async function loadFavors(silent) {
+  if (!S.chatKey) { S.favors = []; renderFavorPage(); renderOverview(); return; }
+  try {
+    const data = await api('/favor', { query: { chat_key: S.chatKey, hide_empty: 'false', limit: '500' } });
+    if (Array.isArray(data.stages) && data.stages.length) STAGE_NAMES = data.stages;
+    S.favors = (data && data.items) || [];
+    S.maxAbsScore = Number(data.max_abs_score || 100);
+  } catch (error) {
+    S.favors = [];
+    if (!silent) toast('读取好感度档案失败：' + error.message);
+  }
+  renderFavorPage();
+  renderOverview();
+  renderEventUserSelect();
+}
+
+async function loadMemoryData() {
+  if (!S.chatKey) return;
+  const query = { chat_key: S.chatKey, limit: '200' };
+  const [memories, notes, facts] = await Promise.allSettled([
+    api('/memories', { query }),
+    api('/notes', { query }),
+    api('/facts', { query }),
+  ]);
+  S.memories = memories.status === 'fulfilled' ? (memories.value.items || []) : [];
+  S.notes = notes.status === 'fulfilled' ? (notes.value.items || []) : [];
+  S.facts = facts.status === 'fulfilled' ? (facts.value.items || []) : [];
+  S.memoryError = memories.status === 'rejected' ? memories.reason.message : '';
+  renderMemoryPage();
+}
+
+async function loadEvents(userId) {
+  const uid = userId || S.activeUser;
+  if (!S.chatKey || !uid) { S.events = []; renderEventsPage(); return; }
+  try {
+    const data = await api('/favor/events', { query: { chat_key: S.chatKey, user_id: uid, limit: '50' } });
+    S.events = (data && data.items) || [];
+  } catch (error) {
+    S.events = [];
+    toast('读取事件流水失败：' + error.message);
+  }
+  renderEventsPage();
+}
+
+async function refreshAll(silent) {
+  if (S.loading) return;
+  S.loading = true;
+  try {
+    await loadFavors(silent);
+    await loadStatus();
+    renderMaintain();
+    if (S.page === 'memory') await loadMemoryData();
+    if (S.page === 'events' && S.activeUser) await loadEvents(S.activeUser);
+  } finally {
+    S.loading = false;
+  }
+}
+
+/* ---------------------------------------------------------------- 概览页 */
+
+function renderOverview() {
+  if (!S.meta) return;
+  const favors = S.favors;
+  const total = favors.length;
+  const withEvents = favors.filter(f => Number(f.event_count) > 0).length;
+  const events = favors.reduce((sum, f) => sum + Number(f.event_count || 0), 0);
+  const positive = favors.filter(f => stageIndex(f.stage) >= 3).length;
+  const negative = favors.filter(f => stageIndex(f.stage) <= 1).length;
+  const avg = total ? favors.reduce((sum, f) => sum + Number(f.score || 0), 0) / total : 0;
+  const meta = S.meta;
+
+  $('metrics').innerHTML = [
+    metricCard('关系档案', total, `${withEvents} 个有事件记录`, 'plain'),
+    metricCard('累计关系事件', events, total ? `人均 ${(events / total).toFixed(1)} 条` : '—', 'amber'),
+    metricCard('正面关系', positive, '亲近 / 偏爱 / 特别亲密', 'red'),
+    metricCard('负面关系', negative, '排斥 / 保留', 'green'),
+    metricCard('平均展示分', fmtNum(avg, 1), `上限 ±${meta.favor.max_abs_score}`, 'plain'),
+    metricCard('数据频道', S.channels.length, '本实例下有数据的频道', 'plain'),
+  ].join('');
+
+  /* 关系衰减 */
+  const rules = meta.rules;
+  const limits = meta.limits;
+  $('decayState').textContent = `每 ${rules.erode_interval_hours} 小时结算`;
+  $('decayBody').innerHTML = [
+    kv('结算间隔', `${rules.erode_interval_hours} 小时`),
+    kv('证据半衰期', `${rules.evidence_half_life_hours} 小时`),
+    kv('同类型边际递减', `1 / (1 + ${limits.repeat_decay} × n)`),
+    kv('升级最少种类数', rules.min_kinds <= 1 ? '不强制（1）' : `${rules.min_kinds} 类`, rules.min_kinds <= 1 ? 'on' : 'warn'),
+    kv('要求具体证据', limits.require_concrete_evidence ? '开启' : '关闭', limits.require_concrete_evidence ? 'warn' : 'off'),
+    kv('闲置回落', '按阶段 30 天 ~ 180 天'),
+  ].join('');
+
+  /* 门控与安全 */
+  const favor = meta.favor;
+  const promote = meta.ai_promote;
+  const rank = meta.rank_card;
+  $('gateState').textContent = favor.enabled ? '状态机运行中' : '状态机已停用';
+  $('gateBody').innerHTML = [
+    kv('关系状态机', favor.enabled ? '开启' : '关闭', favor.enabled ? 'on' : 'off'),
+    kv('记忆门槛门控', favor.gating_enabled ? '开启' : '关闭', favor.gating_enabled ? 'on' : 'off'),
+    kv('聊过就进榜', favor.auto_enroll ? '开启' : '关闭', favor.auto_enroll ? 'on' : 'off'),
+    kv('默认阶段', favor.default_stage),
+    kv('AI 自主提升', promote.enabled ? `开启（每人每日 ${promote.per_day} 次）` : '关闭', promote.enabled ? 'on' : 'off'),
+    kv('排行榜出图', rank.enabled ? `开启（最多 ${rank.limit} 人）` : '关闭', rank.enabled ? 'on' : 'off'),
+    kv('无前缀关键词', rank.keyword_enabled ? (rank.keywords || '—') : '关闭', rank.keyword_enabled ? 'on' : 'off'),
+  ].join('');
+
+  /* 阶段分布 */
+  const counts = STAGE_NAMES.map(name => favors.filter(f => f.stage === name).length);
+  const peak = Math.max(1, ...counts);
+  $('distSub').textContent = total ? `共 ${total} 个档案` : '暂无档案';
+  $('distBody').innerHTML = STAGE_NAMES.map((name, index) => {
+    const tone = index <= 1 ? 'down' : (index >= 3 ? 'up' : '');
+    const pct = total ? (counts[index] / total * 100).toFixed(1) : '0.0';
+    return `<div class="dist-row">
+      <span>${stageBadge(name)}</span>
+      <span class="bar"><i class="${tone}" style="width:${(counts[index] / peak * 100).toFixed(1)}%"></i></span>
+      <span class="n">${counts[index]} · ${pct}%</span>
+    </div>`;
+  }).join('');
+
+  /* 记忆分层 */
+  $('layerBody').innerHTML = [
+    kv('长期记忆', `${S.memories.length} 条`),
+    kv('结构化事实', `${S.facts.length} 条`),
+    kv('笔记', `${S.notes.length} 条`),
+    kv('字符预算', `${meta.memory.prompt_max_chars} 字符`),
+    kv('自动回忆', meta.memory.auto_recall ? `开启（上限 ${meta.memory.auto_recall_limit} 条）` : '关闭', meta.memory.auto_recall ? 'on' : 'off'),
+    kv('短期滑动窗口', meta.memory.sliding_window ? '开启' : '关闭', meta.memory.sliding_window ? 'on' : 'off'),
+    kv('自动整合', meta.memory.auto_consolidation ? '开启' : '关闭', meta.memory.auto_consolidation ? 'on' : 'off'),
+    kv('用户画像 / 灵魂状态', `${meta.memory.user_profile ? '画像开' : '画像关'} · ${meta.memory.soul_state ? '灵魂开' : '灵魂关'}`),
+  ].join('');
+}
+
+function metricCard(label, value, hint, tone) {
+  return `<div class="metric tone-${tone || 'plain'}">
+    <span class="metric-dot"></span>
+    <div class="metric-label">${esc(label)}</div>
+    <div class="metric-value">${esc(String(value))}</div>
+    <div class="metric-hint">${esc(hint || '')}</div>
+  </div>`;
+}
+
+function kv(key, value, tone) {
+  const cls = tone ? ' ' + tone : '';
+  return `<div class="kv"><span class="k">${esc(key)}</span><span class="v${cls}">${esc(value)}</span></div>`;
+}
+
+/* -------------------------------------------------------- 好感度档案页 */
+
+function visibleFavors() {
+  let items = S.favors.slice();
+  if ($('hideEmpty').checked) items = items.filter(f => Number(f.event_count) > 0);
+  const needle = S.filter.trim().toLowerCase();
+  if (needle) {
+    items = items.filter(f => {
+      const hay = [f.display_name, f.user_id, f.stage, f.last_reason, (f.tags || []).join(' ')].join(' ').toLowerCase();
+      return hay.includes(needle);
     });
+  }
+  const sort = $('favorSort').value;
+  items.sort((a, b) => {
+    if (sort === 'events') return Number(b.event_count || 0) - Number(a.event_count || 0);
+    if (sort === 'recent') return Number(b.last_event_at || b.updated_at || 0) - Number(a.last_event_at || a.updated_at || 0);
+    if (sort === 'stage') return stageIndex(b.stage) - stageIndex(a.stage) || Number(b.score || 0) - Number(a.score || 0);
+    if (sort === 'name') return String(a.display_name || a.user_id).localeCompare(String(b.display_name || b.user_id), 'zh');
+    return Number(b.score || 0) - Number(a.score || 0);
+  });
+  return items;
+}
+
+function renderFavorPage() {
+  const wrap = $('favorTable');
+  const items = visibleFavors();
+  $('cntFavor').textContent = String(S.favors.length);
+  if (!items.length) {
+    wrap.innerHTML = `<div class="empty"><svg class="ico"><use href="#i-users"/></svg><div>${
+      S.favors.length ? '没有符合筛选条件的档案' : '当前频道还没有任何好感度档案'}</div></div>`;
+    return;
+  }
+  const rows = items.map((item, index) => {
+    const tone = stageTone(item.stage);
+    const pos = Number(item.pos_weight || 0);
+    const neg = Number(item.neg_weight || 0);
+    const tags = (item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+    return `<tr class="clickable" data-uid="${esc(item.user_id)}">
+      <td class="num muted-2">${index + 1}</td>
+      <td>
+        <div class="cell-name">${esc(item.display_name || item.user_id)}</div>
+        <div class="cell-sub">${esc(item.user_id)}</div>
+      </td>
+      <td>${stageBadge(item.stage)}</td>
+      <td class="score ${tone} num">${Number(item.score) > 0 ? '+' : ''}${Number(item.score || 0)}</td>
+      <td class="num"><span class="muted-2">正</span> ${fmtNum(pos, 1)} <span class="muted-2">/ 负</span> ${fmtNum(neg, 1)}
+        <div class="cell-sub">${(item.pos_kinds || []).length} 类正向 · ${Number(item.event_count || 0)} 条事件</div>
+      </td>
+      <td>${tags || '<span class="muted-2">—</span>'}</td>
+      <td class="muted clamp" title="${esc(item.last_reason || '')}">${esc(item.last_reason || '—')}</td>
+      <td class="muted-2 nowrap">${esc(fmtAgo(item.last_event_at || item.updated_at))}</td>
+      <td class="actions">
+        <button class="tiny" data-act="stage" data-uid="${esc(item.user_id)}">阶段</button>
+        <button class="tiny" data-act="event" data-uid="${esc(item.user_id)}">事件</button>
+        <button class="tiny danger" data-act="del" data-uid="${esc(item.user_id)}">删除</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `<table><thead><tr>
+    <th>#</th><th>用户</th><th>阶段</th><th>展示分</th><th>阶段内证据</th><th>标签</th>
+    <th>最近理由</th><th>最近互动</th><th style="text-align:right">操作</th>
+  </tr></thead><tbody>${rows}</tbody></table>`;
+
+  wrap.querySelectorAll('tr.clickable').forEach(tr => {
+    tr.addEventListener('click', event => {
+      if (event.target.closest('button')) return;
+      openDrawer(tr.dataset.uid);
+    });
+  });
+  wrap.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.addEventListener('click', event => {
+      event.stopPropagation();
+      const uid = btn.dataset.uid;
+      if (btn.dataset.act === 'stage') return askStage(uid);
+      if (btn.dataset.act === 'event') return askEvent(uid);
+      return deleteProfile(uid);
+    });
+  });
+}
+
+function findProfile(userId) {
+  return S.favors.find(f => f.user_id === userId) || null;
+}
+
+function displayOf(userId) {
+  const profile = findProfile(userId);
+  return profile ? (profile.display_name || profile.user_id) : userId;
+}
+
+/* ---------------------------------------------------------------- 详情抽屉 */
+
+async function openDrawer(userId) {
+  S.activeUser = userId;
+  const profile = findProfile(userId);
+  $('drawerName').textContent = displayOf(userId);
+  $('drawerId').textContent = userId;
+  $('drawer').classList.add('show');
+  $('drawerMask').classList.add('show');
+  renderDrawerBody(profile, null);
+  await loadEvents(userId);
+  renderDrawerBody(profile, S.events);
+}
+
+function closeDrawer() {
+  $('drawer').classList.remove('show');
+  $('drawerMask').classList.remove('show');
+}
+
+function renderDrawerBody(profile, events) {
+  if (!profile) { $('drawerBody').innerHTML = '<div class="empty">档案不存在</div>'; return; }
+  const index = stageIndex(profile.stage);
+  const stage = S.meta ? S.meta.stages[index] : null;
+  const pos = Number(profile.pos_weight || 0);
+  const neg = Number(profile.neg_weight || 0);
+  const net = pos - neg;
+  const isTop = index >= STAGE_NAMES.length - 1;
+  const threshold = stage ? Number(stage.up_threshold || 0) : 0;
+  const progress = !isTop && threshold > 0 ? clamp01(net / threshold) : (isTop ? 1 : 0);
+  const entered = Number(profile.stage_entered_at || 0);
+  const stayedHours = entered ? (Date.now() / 1000 - entered) / 3600 : 0;
+
+  const tags = (profile.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="muted-2">—</span>';
+  const posKinds = (profile.pos_kinds || []).map(k => `<span class="badge up">${esc(kindLabel(k))}</span>`).join(' ') || '<span class="muted-2">—</span>';
+  const negKinds = (profile.neg_kinds || []).map(k => `<span class="badge down">${esc(kindLabel(k))}</span>`).join(' ') || '<span class="muted-2">—</span>';
+
+  $('drawerBody').innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      ${stageBadge(profile.stage)}
+      <span class="score ${stageTone(profile.stage)}">${Number(profile.score) > 0 ? '+' : ''}${Number(profile.score || 0)}</span>
+      <span class="muted-2" style="font-size:12px">展示分</span>
+    </div>
+
+    <div class="section-title">升级进度</div>
+    <div class="bar" style="height:8px"><i class="${stageTone(profile.stage)}" style="width:${(progress * 100).toFixed(1)}%"></i></div>
+    <div class="muted-2" style="font-size:11.5px;margin-top:6px">
+      ${isTop
+        ? '已是最高阶段，无法再提升。'
+        : `净正向证据 ${fmtNum(net, 1)} / 阈值 ${fmtNum(threshold, 1)}；阶段内已停留 ${fmtDuration(stayedHours)}（最短 ${stage ? stage.min_hours : '?'} 小时）`}
+    </div>
+
+    <div class="section-title">阶段内证据</div>
+    <div class="kv"><span class="k">正向权重</span><span class="v up" style="color:var(--red)">${fmtNum(pos, 2)}</span></div>
+    <div class="kv"><span class="k">负向权重</span><span class="v" style="color:var(--green)">${fmtNum(neg, 2)}</span></div>
+    <div class="kv"><span class="k">净证据</span><span class="v">${fmtNum(net, 2)}</span></div>
+    <div class="kv"><span class="k">事件总数</span><span class="v">${Number(profile.event_count || 0)} 条</span></div>
+    <div class="kv"><span class="k">最近事件</span><span class="v">${esc(fmtAgo(profile.last_event_at || profile.updated_at))}</span></div>
+    <div class="kv"><span class="k">档案建立</span><span class="v">${esc(fmtTime(profile.created_at))}</span></div>
+
+    <div class="section-title">正向事件种类</div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap">${posKinds}</div>
+    <div class="section-title">负向事件种类</div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap">${negKinds}</div>
+
+    <div class="section-title">标签与摘要</div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">${tags}</div>
+    <div class="kv"><span class="k">最近理由</span><span class="v wrap-anywhere" style="max-width:60%">${esc(profile.last_reason || '—')}</span></div>
+    <div class="kv"><span class="k">关系摘要</span><span class="v wrap-anywhere" style="max-width:60%">${esc(profile.summary || '—')}</span></div>
+    <div class="kv"><span class="k">互动提示</span><span class="v wrap-anywhere" style="max-width:60%">${esc(profile.interaction_hint || '—')}</span></div>
+
+    <div class="section-title">关系事件流水</div>
+    ${events === null
+      ? '<div class="empty">读取中…</div>'
+      : (events.length ? `<div class="timeline">${events.map(eventItem).join('')}</div>`
+        : '<div class="empty">还没有事件记录</div>')}
+  `;
+}
+
+function kindLabel(key) {
+  const meta = S.meta;
+  if (meta) {
+    const found = meta.event_kinds.find(k => k.key === key);
+    if (found) return found.label;
+  }
+  return key;
+}
+
+function eventItem(event) {
+  const tone = Number(event.polarity) > 0 ? 'up' : (Number(event.polarity) < 0 ? 'down' : '');
+  const moved = event.stage_before && event.stage_after && event.stage_before !== event.stage_after
+    ? `${event.stage_before} → ${event.stage_after}` : '';
+  return `<div class="tl-item">
+    <span class="tl-dot ${tone}"></span>
+    <div class="tl-body">
+      <div class="tl-top">
+        <span class="badge ${tone}">${esc(event.label || kindLabel(event.kind))}</span>
+        <span class="muted-2">${esc(event.kind)}</span>
+        <span class="muted-2">权重 ${fmtNum(event.weight, 2)}</span>
+        <span class="tl-time">${esc(fmtTime(event.created_at))}</span>
+      </div>
+      <div class="tl-evidence">${esc(event.evidence || '（无证据）')}</div>
+      ${moved ? `<div class="tl-move">阶段跃迁：${esc(moved)}　分数 ${Number(event.score_after || 0)}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------ 关系事件页 */
+
+function renderEventUserSelect() {
+  const sel = $('eventUser');
+  if (!S.favors.length) { sel.innerHTML = '<option value="">当前频道没有档案</option>'; return; }
+  const sorted = S.favors.slice().sort((a, b) => Number(b.event_count || 0) - Number(a.event_count || 0));
+  sel.innerHTML = sorted.map(f => {
+    const label = `${f.display_name || f.user_id} · ${f.stage} · ${Number(f.event_count || 0)} 条`;
+    return `<option value="${esc(f.user_id)}"${f.user_id === S.activeUser ? ' selected' : ''}>${esc(label)}</option>`;
+  }).join('');
+}
+
+function renderEventsPage() {
+  const wrap = $('eventList');
+  $('cntEvents').textContent = String(S.favors.reduce((sum, f) => sum + Number(f.event_count || 0), 0));
+  if (!S.activeUser) { wrap.innerHTML = '<div class="empty">选择一个用户查看其关系事件流水</div>'; return; }
+  if (!S.events.length) {
+    wrap.innerHTML = `<div class="empty"><svg class="ico"><use href="#i-activity"/></svg>
+      <div>${esc(displayOf(S.activeUser))} 还没有关系事件记录</div></div>`;
+    return;
+  }
+  wrap.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      <b style="color:var(--text-strong)">${esc(displayOf(S.activeUser))}</b>
+      <span class="cell-sub">${esc(S.activeUser)}</span>
+      <span class="badge accent">共 ${S.events.length} 条</span>
+    </div>
+    <div class="timeline">${S.events.map(eventItem).join('')}</div>`;
+}
+
+/* --------------------------------------------------------- 记忆与笔记页 */
+
+function renderMemoryPage() {
+  const wrap = $('memoryTable');
+  const tab = S.memTab;
+  if (S.memoryError && !S.memories.length && !S.notes.length && !S.facts.length) {
+    wrap.innerHTML = `<div class="empty"><svg class="ico"><use href="#i-alert"/></svg>
+      <div>读取记忆数据失败：${esc(S.memoryError)}<br>
+      <span class="muted-2">记忆与笔记接口需要面板管理员权限；请通过面板内的「页面」Tab 打开本页。</span></div></div>`;
+    $('memoryCount').textContent = '—';
+    return;
+  }
+  const needle = S.memoryFilter.trim().toLowerCase();
+  const match = text => !needle || String(text || '').toLowerCase().includes(needle);
+
+  if (tab === 'memories') {
+    const items = S.memories.filter(m => match(m.content) || match(m.summary) || match((m.tags || []).join(' ')));
+    $('memoryCount').textContent = `${items.length} / ${S.memories.length} 条`;
+    if (!items.length) { wrap.innerHTML = '<div class="empty">没有匹配的长期记忆</div>'; return; }
+    wrap.innerHTML = `<table><thead><tr>
+        <th>#</th><th>类型</th><th>内容</th><th>标签</th><th>重要度</th><th>门槛</th><th>建立时间</th><th style="text-align:right">操作</th>
+      </tr></thead><tbody>${items.map((m, i) => `<tr>
+        <td class="num muted-2">${i + 1}</td>
+        <td><span class="badge">${esc(m.memory_type)}</span></td>
+        <td class="wrap-anywhere" style="max-width:420px">
+          ${esc(m.content)}
+          ${m.summary ? `<div class="cell-sub">${esc(m.summary)}</div>` : ''}
+        </td>
+        <td>${(m.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="muted-2">—</span>'}</td>
+        <td class="num">${fmtNum(m.importance, 2)}</td>
+        <td>${Number(m.min_favor) > 0
+          ? `<span class="badge accent">${esc(m.min_favor)}</span>`
+          : '<span class="muted-2">公开</span>'}</td>
+        <td class="muted-2 nowrap">${esc(fmtTime(m.created_at))}</td>
+        <td class="actions"><button class="tiny danger" data-del-memory="${esc(m.id)}">删除</button></td>
+      </tr>`).join('')}</tbody></table>`;
+    wrap.querySelectorAll('button[data-del-memory]').forEach(btn => {
+      btn.addEventListener('click', () => deleteMemory(btn.dataset.delMemory));
+    });
+    return;
+  }
+
+  if (tab === 'facts') {
+    const items = S.facts.filter(f => match(f.subject) || match(f.attribute) || match(f.value) || match(f.user_id));
+    $('memoryCount').textContent = `${items.length} / ${S.facts.length} 条`;
+    if (!items.length) { wrap.innerHTML = '<div class="empty">没有匹配的结构化事实</div>'; return; }
+    wrap.innerHTML = `<table><thead><tr>
+        <th>#</th><th>主体</th><th>属性</th><th>值</th><th>置信度</th><th>来源</th><th>更新时间</th><th style="text-align:right">操作</th>
+      </tr></thead><tbody>${items.map((f, i) => `<tr>
+        <td class="num muted-2">${i + 1}</td>
+        <td class="cell-name">${esc(f.subject || f.user_id)}</td>
+        <td><span class="badge">${esc(f.attribute)}</span></td>
+        <td class="wrap-anywhere" style="max-width:360px">${esc(f.value)}</td>
+        <td class="num">${fmtNum(f.confidence, 2)}</td>
+        <td class="muted-2">${esc(f.source)}</td>
+        <td class="muted-2 nowrap">${esc(fmtTime(f.updated_at || f.created_at))}</td>
+        <td class="actions"><button class="tiny danger" data-del-fact="${esc(f.id)}">删除</button></td>
+      </tr>`).join('')}</tbody></table>`;
+    wrap.querySelectorAll('button[data-del-fact]').forEach(btn => {
+      btn.addEventListener('click', () => deleteFact(btn.dataset.delFact));
+    });
+    return;
+  }
+
+  const items = S.notes.filter(n => match(n.title) || match(n.content) || match((n.tags || []).join(' ')));
+  $('memoryCount').textContent = `${items.length} / ${S.notes.length} 条`;
+  if (!items.length) { wrap.innerHTML = '<div class="empty">没有匹配的笔记</div>'; return; }
+  wrap.innerHTML = `<table><thead><tr>
+      <th>#</th><th>标题</th><th>内容</th><th>标签</th><th>来源</th><th>更新时间</th><th style="text-align:right">操作</th>
+    </tr></thead><tbody>${items.map((n, i) => `<tr>
+      <td class="num muted-2">${i + 1}</td>
+      <td class="cell-name">${esc(n.title || '（无标题）')}</td>
+      <td class="wrap-anywhere" style="max-width:420px">${esc(n.content)}</td>
+      <td>${(n.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="muted-2">—</span>'}</td>
+      <td class="muted-2">${esc(n.source)}</td>
+      <td class="muted-2 nowrap">${esc(fmtTime(n.updated_at || n.created_at))}</td>
+      <td class="actions"><button class="tiny danger" data-del-note="${esc(n.id)}">删除</button></td>
+    </tr>`).join('')}</tbody></table>`;
+  wrap.querySelectorAll('button[data-del-note]').forEach(btn => {
+    btn.addEventListener('click', () => deleteNote(btn.dataset.delNote));
+  });
+}
+
+/* ---------------------------------------------------------- 规则与门控页 */
+
+function renderRulesPage() {
+  if (!S.meta) return;
+  const meta = S.meta;
+
+  $('stageTable').innerHTML = `<table><thead><tr>
+      <th>阶段</th><th>分数区间</th><th>升阶阈值</th><th>最短停留</th><th>降阶阈值</th><th>闲置回落</th><th>互动指导语</th>
+    </tr></thead><tbody>${meta.stages.map((stage, index) => `<tr>
+      <td>${stageBadge(stage.name)}<div class="cell-sub">rank ${index}</div></td>
+      <td class="num">${stage.low} ~ ${stage.high}</td>
+      <td class="num">${index >= meta.stages.length - 1 ? '<span class="muted-2">—</span>' : fmtNum(stage.up_threshold, 1)}</td>
+      <td class="num">${fmtHours(stage.min_hours)}</td>
+      <td class="num">${stage.down_threshold > 0 ? fmtNum(stage.down_threshold, 1) : '<span class="muted-2">—</span>'}</td>
+      <td class="num">${fmtHours(stage.idle_demote_hours)}</td>
+      <td class="muted wrap-anywhere" style="max-width:340px">${esc(stage.guide)}</td>
+    </tr>`).join('')}</tbody></table>`;
+
+  const pos = meta.event_kinds.filter(k => k.polarity > 0);
+  const neg = meta.event_kinds.filter(k => k.polarity < 0);
+  const kindRows = list => list.map(k => `<tr>
+      <td><span class="badge ${k.polarity > 0 ? 'up' : 'down'}">${esc(k.label)}</span></td>
+      <td class="mono muted-2">${esc(k.key)}</td>
+      <td class="num">${k.polarity > 0 ? '+' : '−'}${fmtNum(k.weight, 1)}</td>
+      <td class="muted wrap-anywhere" style="max-width:420px">${esc(k.hint)}</td>
+    </tr>`).join('');
+  $('kindTable').innerHTML = `<table><thead><tr>
+      <th>类型</th><th>键名</th><th>基准权重</th><th>判定说明</th>
+    </tr></thead><tbody>
+      <tr><td colspan="4" class="muted-2" style="background:var(--panel-2)">正向 · 推高关系</td></tr>
+      ${kindRows(pos)}
+      <tr><td colspan="4" class="muted-2" style="background:var(--panel-2)">负向 · 压低关系</td></tr>
+      ${kindRows(neg)}
+    </tbody></table>`;
+
+  const limits = meta.limits;
+  const rules = meta.rules;
+  $('limitBody').innerHTML = [
+    kv('两次事件最小间隔', limits.min_interval_minutes > 0 ? `${limits.min_interval_minutes} 分钟` : '不限制'),
+    kv('每日事件上限', `${limits.max_events_per_day} 条`),
+    kv('每日正向上限', `${limits.max_positive_per_day} 条`),
+    kv('每日负向上限', `${limits.max_negative_per_day} 条`),
+    kv('同类型边际递减', `1 / (1 + ${limits.repeat_decay} × n)`),
+    kv('证据字符上限', `${limits.max_evidence_chars} 字符`),
+    kv('单用户事件保留', `${limits.max_event_history} 条`),
+    kv('要求具体证据', limits.require_concrete_evidence ? '开启' : '关闭', limits.require_concrete_evidence ? 'warn' : 'off'),
+    kv('升级最少种类数', rules.min_kinds <= 1 ? '不强制（1）' : `${rules.min_kinds} 类`, rules.min_kinds <= 1 ? 'on' : 'warn'),
+  ].join('');
+
+  const severity = meta.severity;
+  $('severityBody').innerHTML = Object.keys(severity.labels).map(level => kv(
+    `严重度 ${level} · ${severity.labels[level]}`,
+    `× ${fmtNum(severity.factors[level], 2)}`,
+    Number(level) >= 3 ? 'warn' : ''
+  )).join('') + `<div class="hint muted-2" style="font-size:11.5px;margin-top:10px">
+      实际权重 = 事件基准权重 × 严重度系数，再按同类型重复次数递减。
+    </div>`;
+}
+
+/* ------------------------------------------------------------ 数据维护页 */
+
+function renderMaintain() {
+  $('mtChatKey').textContent = S.chatKey || '—';
+  const status = S.status;
+  $('mtDb').textContent = status ? status.database : '—';
+  $('mtFts').textContent = status ? (status.fts_available ? '可用' : '不可用') : '—';
+  /* instances 是可选字段：部分部署形态不返回，缺失时退化成「—」而不是显示 0 */
+  const instances = status && Array.isArray(status.instances) ? status.instances.length : null;
+  $('mtInstances').textContent = instances === null ? '—' : String(instances);
+}
+
+/* ------------------------------------------------------------------ 弹窗 */
+
+function openModal(html, onMount) {
+  const mask = $('modalMask');
+  $('modal').innerHTML = html;
+  mask.classList.add('show');
+  if (onMount) onMount($('modal'));
+}
+
+function closeModal() {
+  $('modalMask').classList.remove('show');
+  $('modal').innerHTML = '';
+}
+
+function askStage(userId) {
+  const profile = findProfile(userId);
+  const current = profile ? profile.stage : (S.meta ? S.meta.favor.default_stage : '中立');
+  openModal(`
+    <div class="modal-head">
+      <h3>设定关系阶段</h3>
+      <p>${esc(displayOf(userId))} · <span class="mono">${esc(userId)}</span></p>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>目标阶段</label>
+        <select id="mStage">${STAGE_NAMES.map(name => `<option value="${esc(name)}"${name === current ? ' selected' : ''}>${esc(name)}</option>`).join('')}</select>
+        <div class="hint">人工设定会重置阶段内证据，并以「人工设定」记一条事件流水。</div>
+      </div>
+      <div class="field">
+        <label>理由（可选）</label>
+        <input type="text" id="mReason" placeholder="例如：人工校准 / 老群友补档" />
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="mCancel">取消</button>
+      <button class="primary" id="mOk">保存</button>
+    </div>`, modal => {
+    $('mCancel').addEventListener('click', closeModal);
+    $('mOk').addEventListener('click', async () => {
+      const stage = $('mStage').value;
+      const reason = $('mReason').value.trim() || 'WebUI 人工设定关系阶段';
+      try {
+        await api('/favor', {
+          method: 'POST',
+          body: { chat_key: S.chatKey, user_id: userId, stage, reason, display_name: displayOf(userId) },
+        });
+        closeModal();
+        toast(`已把 ${displayOf(userId)} 设定为「${stage}」`);
+        await loadFavors();
+        if (S.activeUser === userId) await openDrawer(userId);
+      } catch (error) {
+        toast('设定失败：' + error.message);
+      }
+    });
+  });
+}
+
+function askEvent(userId) {
+  const target = userId || S.activeUser;
+  if (!target) { toast('请先选择一个用户'); return; }
+  const kinds = S.meta ? S.meta.event_kinds : [];
+  const pos = kinds.filter(k => k.polarity > 0);
+  const neg = kinds.filter(k => k.polarity < 0);
+  const opt = list => list.map(k => `<option value="${esc(k.key)}">${esc(k.label)}（${esc(k.key)} · ${fmtNum(k.weight, 1)}）</option>`).join('');
+  const severity = S.meta ? S.meta.severity : { labels: { 1: '轻微', 2: '明显', 3: '严重' } };
+
+  openModal(`
+    <div class="modal-head">
+      <h3>记录关系事件</h3>
+      <p>${esc(displayOf(target))} · <span class="mono">${esc(target)}</span></p>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>事件类型</label>
+        <select id="mKind">
+          <optgroup label="正向">${opt(pos)}</optgroup>
+          <optgroup label="负向">${opt(neg)}</optgroup>
+        </select>
+      </div>
+      <div class="field">
+        <label>严重度</label>
+        <div class="radio-row" id="mSevRow">
+          ${Object.keys(severity.labels).map(level => `
+            <label class="${Number(level) === 2 ? 'on' : ''}">
+              <input type="radio" name="mSev" value="${level}"${Number(level) === 2 ? ' checked' : ''} />
+              ${esc(severity.labels[level])}
+            </label>`).join('')}
+        </div>
+      </div>
+      <div class="field">
+        <label>具体证据</label>
+        <textarea id="mEvidence" placeholder="写明具体发生了什么，例如「帮我把服务器上的报错日志翻出来定位了问题」"></textarea>
+        <div class="hint">同一用户两次事件之间有最小间隔限制，超限会被状态机拒绝。</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="mCancel">取消</button>
+      <button class="primary" id="mOk">记录</button>
+    </div>`, modal => {
+    $('mCancel').addEventListener('click', closeModal);
+    modal.querySelectorAll('#mSevRow label').forEach(label => {
+      label.addEventListener('click', () => {
+        modal.querySelectorAll('#mSevRow label').forEach(other => other.classList.remove('on'));
+        label.classList.add('on');
+      });
+    });
+    $('mOk').addEventListener('click', async () => {
+      const kind = $('mKind').value;
+      const severityValue = Number((modal.querySelector('input[name=mSev]:checked') || {}).value || 2);
+      const evidence = $('mEvidence').value.trim();
+      try {
+        const res = await api('/favor', {
+          method: 'POST',
+          body: { chat_key: S.chatKey, user_id: target, kind, severity: severityValue, evidence, display_name: displayOf(target) },
+        });
+        closeModal();
+        const move = res.transition && res.transition.direction
+          ? `（${res.transition.direction > 0 ? '关系升温' : '关系降温'} → ${res.transition.stage}）` : '';
+        toast(`已记录事件${move}`);
+        await loadFavors();
+        if (S.activeUser === target) await loadEvents(target);
+      } catch (error) {
+        toast('记录失败：' + error.message);
+      }
+    });
+  });
+}
+
+function askNewProfile() {
+  openModal(`
+    <div class="modal-head">
+      <h3>新建 / 设定档案</h3>
+      <p>为某个 user_id 直接建一条关系档案并设定阶段。</p>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>user_id</label>
+        <input type="text" id="mUser" placeholder="例如 1234567890" />
+      </div>
+      <div class="field">
+        <label>昵称（可选）</label>
+        <input type="text" id="mName" placeholder="展示用昵称" />
+      </div>
+      <div class="field">
+        <label>目标阶段</label>
+        <select id="mStage">${STAGE_NAMES.map(name => `<option value="${esc(name)}"${name === '中立' ? ' selected' : ''}>${esc(name)}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="mCancel">取消</button>
+      <button class="primary" id="mOk">保存</button>
+    </div>`, modal => {
+    $('mCancel').addEventListener('click', closeModal);
+    $('mOk').addEventListener('click', async () => {
+      const userId = $('mUser').value.trim();
+      if (!userId) { toast('请填写 user_id'); return; }
+      try {
+        await api('/favor', {
+          method: 'POST',
+          body: {
+            chat_key: S.chatKey, user_id: userId, stage: $('mStage').value,
+            display_name: $('mName').value.trim(), reason: 'WebUI 人工建档',
+          },
+        });
+        closeModal();
+        toast('已保存');
+        await loadFavors();
+      } catch (error) {
+        toast('保存失败：' + error.message);
+      }
+    });
+  });
+}
+
+async function deleteProfile(userId) {
+  if (!confirm(`确认删除 ${displayOf(userId)} 的关系档案与全部事件历史？\n\n此操作不可恢复。`)) return;
+  try {
+    await api('/favor', { method: 'DELETE', query: { chat_key: S.chatKey, user_id: userId } });
+    toast('已删除档案');
+    if (S.activeUser === userId) closeDrawer();
+    await loadFavors();
   } catch (error) {
-    /* 失败了先怀疑「这串其实是访问密钥」：是就认下来并列频道，不是才报错 */
-    const probed = await probeAsKey(chatKey);
-    if (probed) { adoptKey(chatKey); renderChannels(probed); return; }
-    lastRenderSig = '';
-    wrap.innerHTML = `<div class="empty">载入失败：${esc(error.message)}<br>`
-      + '<span class="muted">若还没鉴权：把插件配置里的 WEBUI_ACCESS_KEY 填进上面的输入框再点「载入」，'
-      + '或先登录 NekroAgent 面板。</span></div>';
+    toast('删除失败：' + error.message);
   }
 }
 
-async function handleRow(act, userId, chatKey) {
+async function deleteMemory(id) {
+  if (!confirm('确认删除这条长期记忆？')) return;
   try {
-    if (act === 'stage') {
-      const raw = prompt(`把 ${userId} 的关系阶段设为：\n可选：${STAGES.join(' / ')}`, STAGES[2]);
-      if (raw === null) return;
-      const stage = raw.trim();
-      if (!STAGES.includes(stage)) { toast('阶段无效'); return; }
-      await api('/favor', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_key: chatKey, user_id: userId, stage, reason: 'WebUI 人工设定关系阶段' }),
-      });
-      toast('已设定阶段');
-    } else if (act === 'event') {
-      const kind = prompt(`为 ${userId} 记录一次关系事件，事件类型：\nhelp / support / promise_kept / deep_talk / gift / banter /\ndisrespect / promise_broken / harassment / betrayal / deception / spam`, 'help');
-      if (kind === null) return;
-      const evidence = prompt('请写明具体证据（不能只有「聊得不错」这类氛围词）：', '');
-      if (evidence === null) return;
-      const res = await api('/favor', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_key: chatKey, user_id: userId, kind: kind.trim(), evidence, severity: 2 }),
-      });
-      const moved = res.transition && res.transition.direction ? `（${res.transition.reason}）` : '';
-      toast(`已记录事件${moved}`);
-    } else if (act === 'del') {
-      if (!confirm(`确认删除 ${userId} 的关系档案与事件历史？`)) return;
-      await api('/favor?' + withAuth({ chat_key: chatKey, user_id: userId }), { method: 'DELETE' });
-      toast('已删除');
-    }
-    load();
-  } catch (error) {
-    toast('操作失败：' + error.message);
-  }
+    await api(`/memories/${encodeURIComponent(id)}`, { method: 'DELETE', query: { chat_key: S.chatKey } });
+    toast('已删除');
+    await loadMemoryData();
+  } catch (error) { toast('删除失败：' + error.message); }
 }
+
+async function deleteNote(id) {
+  if (!confirm('确认删除这条笔记？')) return;
+  try {
+    await api(`/notes/${encodeURIComponent(id)}`, { method: 'DELETE', query: { chat_key: S.chatKey } });
+    toast('已删除');
+    await loadMemoryData();
+  } catch (error) { toast('删除失败：' + error.message); }
+}
+
+async function deleteFact(id) {
+  if (!confirm('确认删除这条结构化事实？')) return;
+  try {
+    await api('/facts', { method: 'DELETE', query: { chat_key: S.chatKey, fact_id: id } });
+    toast('已删除');
+    await loadMemoryData();
+  } catch (error) { toast('删除失败：' + error.message); }
+}
+
+/* -------------------------------------------------------------- 维护动作 */
 
 async function renderCard() {
-  const chatKey = document.getElementById('chatKey').value.trim();
-  if (!chatKey) { toast('请先填写 chat_key'); return; }
-  const img = document.getElementById('card');
-  const empty = document.getElementById('cardEmpty');
+  if (!S.chatKey) { toast('请先选择频道'); return; }
+  const img = $('card');
+  const empty = $('cardEmpty');
   try {
-    const res = await fetch(BASE + '/favor/card?' + withAuth({ chat_key: chatKey, limit: '20' }));
+    const res = await fetch(buildUrl('/favor/card', { chat_key: S.chatKey, limit: '20' }));
     if (!res.ok) {
-      let detail = res.statusText;
-      try { detail = (await res.json()).detail || detail; } catch (e) {}
+      let detail = `${res.status} ${res.statusText}`;
+      try { const data = await res.json(); if (data.detail) detail = data.detail; } catch (error) { /* ignore */ }
       throw new Error(detail);
     }
     const blob = await res.blob();
-    img.src = URL.createObjectURL(blob);
+    if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+    const url = URL.createObjectURL(blob);
+    img.dataset.url = url;
+    img.src = url;
     img.style.display = 'block';
     empty.style.display = 'none';
+    switchPage('maintain');
   } catch (error) {
     img.style.display = 'none';
     empty.style.display = 'block';
-    empty.textContent = '生成失败：' + error.message;
+    empty.innerHTML = `<svg class="ico"><use href="#i-alert"/></svg><div>生成失败：${esc(error.message)}</div>`;
   }
 }
 
-async function settle() {
+async function runErode() {
+  if (!confirm('立即执行一次证据衰减结算？\n\n不会扣分数，只会按半衰期衰减阶段内证据权重。')) return;
   try {
-    const data = await api('/favor/erode', { method: 'POST' });
+    const data = await api('/favor/erode', { method: 'POST', query: { chat_key: S.chatKey } });
     toast(`结算完成：${data.eroded || 0} 个档案证据衰减，${data.demoted || 0} 个档案关系回落`);
-    load();
-  } catch (error) {
-    toast('结算失败：' + error.message);
-  }
+    await loadFavors();
+  } catch (error) { toast('结算失败：' + error.message); }
+}
+
+async function runMaintain() {
+  if (!confirm('执行记忆维护？\n\n会归档过期弱记忆并按上限裁剪超量条目。')) return;
+  try {
+    const data = await api('/maintenance', { method: 'POST', query: { chat_key: S.chatKey } });
+    const parts = Object.entries(data || {}).map(([k, v]) => `${k} ${v}`);
+    toast('维护完成：' + (parts.length ? parts.join('，') : '无需处理'));
+    await loadMemoryData();
+  } catch (error) { toast('维护失败：' + error.message); }
+}
+
+async function exportData() {
+  try {
+    const data = await api('/export');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `angel-memory-export-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast('已导出');
+  } catch (error) { toast('导出失败：' + error.message); }
 }
 
 async function wipeChannel() {
-  const chatKey = document.getElementById('chatKey').value.trim();
-  if (!chatKey) { toast('请先填写 chat_key'); return; }
-  if (!confirm(`将清空「${chatKey}」的全部数据：\n\n`
+  if (!S.chatKey) { toast('请先选择频道'); return; }
+  if (!confirm(`将清空「${S.chatKey}」的全部数据：\n\n`
     + '长期记忆 / 笔记 / 用户画像 / 灵魂状态 / 关键事实 / 近期梗概 / 好感度档案与事件流水。\n\n'
     + '此操作不可恢复，且只影响这一个频道。确定继续？')) return;
-  const tail = chatKey.split(/[_:]/).pop() || chatKey;
+  const tail = S.chatKey.split(/[_:]/).pop() || S.chatKey;
   const typed = prompt(`二次确认：请输入 ${tail} 以继续`, '');
   if (typed === null) return;
   if (typed.trim() !== tail) { toast('输入不匹配，已取消'); return; }
   try {
-    const data = await api('/reset?' + withAuth({ chat_key: chatKey }), { method: 'POST' });
+    const data = await api('/reset', { method: 'POST', query: { chat_key: S.chatKey } });
     const parts = Object.entries(data || {}).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`);
     toast('已清空：' + (parts.length ? parts.join('，') : '该频道本来就没有数据'));
-    lastRenderSig = '';
-    load();
-  } catch (error) {
-    toast('清空失败：' + error.message);
-  }
+    S.lastSig = '';
+    await loadChannels();
+    await refreshAll();
+    await loadMemoryData();
+  } catch (error) { toast('清空失败：' + error.message); }
 }
 
-/* 自动刷新：只在「输入框的值 == 最近一次成功载入的值」时才跑，
-   避免用户正在改 chat_key 时被半截值触发。 */
-let autoTimer = null;
+/* -------------------------------------------------------------- 页面切换 */
 
+async function switchPage(page) {
+  S.page = page;
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
+  document.querySelectorAll('.page').forEach(el => el.classList.toggle('active', el.dataset.page === page));
+  if (page === 'rules') renderRulesPage();
+  if (page === 'memory') await loadMemoryData();
+  if (page === 'events') { renderEventUserSelect(); await loadEvents(S.activeUser); }
+  if (page === 'overview') { await loadMemoryData(); renderOverview(); }
+  if (page === 'maintain') renderMaintain();
+}
+
+/* ------------------------------------------------------------------ 启动 */
+
+function bindEvents() {
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.addEventListener('click', () => switchPage(el.dataset.page));
+  });
+
+  $('channelSelect').addEventListener('change', async event => {
+    S.chatKey = event.target.value;
+    writeStore(CHAT_STORE, S.chatKey);
+    S.activeUser = '';
+    S.lastSig = '';
+    closeDrawer();
+    await refreshAll();
+    if (S.page === 'memory') await loadMemoryData();
+  });
+
+  $('btnRefresh').addEventListener('click', async () => {
+    await loadChannels();
+    await refreshAll();
+    await loadMemoryData();
+    toast('已刷新');
+  });
+
+  $('btnOpen').addEventListener('click', () => {
+    const url = PLUGIN_BASE + '/ui' + (KEY ? '?key=' + encodeURIComponent(KEY) : '');
+    window.open(url, '_blank', 'noopener,noreferrer');
+  });
+
+  $('favorFilter').addEventListener('input', event => { S.filter = event.target.value; renderFavorPage(); });
+  $('favorSort').addEventListener('change', renderFavorPage);
+  $('hideEmpty').addEventListener('change', renderFavorPage);
+  $('btnNewProfile').addEventListener('click', askNewProfile);
+  $('btnCardFavor').addEventListener('click', renderCard);
+  $('btnOverviewCard').addEventListener('click', renderCard);
+
+  $('eventUser').addEventListener('change', async event => {
+    S.activeUser = event.target.value;
+    await loadEvents(S.activeUser);
+  });
+  $('btnEventReload').addEventListener('click', () => loadEvents(S.activeUser));
+  $('btnRecordEvent').addEventListener('click', () => askEvent(S.activeUser));
+
+  $('memTabs').addEventListener('click', event => {
+    const btn = event.target.closest('button[data-tab]');
+    if (!btn) return;
+    S.memTab = btn.dataset.tab;
+    document.querySelectorAll('#memTabs button').forEach(el => el.classList.toggle('active', el === btn));
+    renderMemoryPage();
+  });
+  $('memoryFilter').addEventListener('input', event => { S.memoryFilter = event.target.value; renderMemoryPage(); });
+  $('btnMemoryReload').addEventListener('click', loadMemoryData);
+
+  $('btnErode').addEventListener('click', runErode);
+  $('btnMaintain').addEventListener('click', runMaintain);
+  $('btnExport').addEventListener('click', exportData);
+  $('btnWipe').addEventListener('click', wipeChannel);
+
+  $('drawerClose').addEventListener('click', closeDrawer);
+  $('drawerMask').addEventListener('click', closeDrawer);
+  $('drawerStage').addEventListener('click', () => askStage(S.activeUser));
+  $('drawerEvent').addEventListener('click', () => askEvent(S.activeUser));
+  $('drawerDelete').addEventListener('click', () => deleteProfile(S.activeUser));
+
+  $('modalMask').addEventListener('click', event => { if (event.target === $('modalMask')) closeModal(); });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if ($('modalMask').classList.contains('show')) closeModal();
+    else closeDrawer();
+  });
+}
+
+/* 自动刷新：只在「本页可见」且「没开弹窗/抽屉」时跑，避免打断正在填的表单 */
 function syncAutoRefresh() {
-  const on = document.getElementById('autoChk').checked;
-  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
-  if (!on) return;
-  autoTimer = setInterval(() => {
-    const current = document.getElementById('chatKey').value.trim();
-    if (!current || current !== lastLoadedKey) return;
-    load(true);
-  }, 5000);
+  if (S.autoTimer) { clearInterval(S.autoTimer); S.autoTimer = null; }
+  S.autoTimer = setInterval(() => {
+    if (document.hidden) return;
+    if ($('modalMask').classList.contains('show')) return;
+    if ($('drawer').classList.contains('show')) return;
+    if (S.page !== 'favor' && S.page !== 'overview') return;
+    refreshAll(true);
+  }, 15000);
 }
 
-document.getElementById('loadBtn').addEventListener('click', () => load());
-document.getElementById('cardBtn').addEventListener('click', renderCard);
-document.getElementById('erodeBtn').addEventListener('click', settle);
-document.getElementById('wipeBtn').addEventListener('click', wipeChannel);
-document.getElementById('autoChk').addEventListener('change', syncAutoRefresh);
-document.getElementById('chatKey').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+async function boot(isRetry) {
+  bindEventsOnce();
+  setStatus('', '连接中…');
+  renderAuthBanner();
 
-/* 密钥初始化：网址上带了 ?key= 就存下来，随后把它从地址栏抹掉，
-   避免密钥留在浏览器历史 / 截图 / 分享链接里。 */
-const urlKey = PARAMS.get('key') || '';
-if (urlKey) {
-  saveKey(urlKey);
+  const ok = await loadMeta();
+  if (!ok) {
+    setStatus('bad', '未授权');
+    if (!isRetry) { /* 已经渲染了鉴权提示条 */ }
+    return;
+  }
+  setStatus('ok', '运行中');
+
+  await loadStatus();
+  await loadChannels();
+  await refreshAll();
+  await loadMemoryData();
+  renderRulesPage();
+  renderOverview();
+  syncAutoRefresh();
+}
+
+let _bound = false;
+function bindEventsOnce() {
+  if (_bound) return;
+  _bound = true;
+  bindEvents();
+}
+
+/* 网址上带了 ?key= 就存下来并从地址栏抹掉，避免密钥留在历史 / 截图 / 分享链接里 */
+if (PARAMS.get('key')) {
+  writeStore(KEY_STORE, PARAMS.get('key'));
   PARAMS.delete('key');
   try {
     const clean = location.pathname + (PARAMS.toString() ? '?' + PARAMS.toString() : '');
@@ -463,20 +1905,7 @@ if (urlKey) {
   } catch (error) { /* 某些环境不允许改地址栏，忽略 */ }
 }
 
-syncAutoRefresh();
-
-/* 打开时自动加载：网址带 ?chat_key=xxx 就载入那个频道；
-   只带了密钥（或之前记住过密钥）就先列出频道供点选。 */
-const initialChatKey = PARAMS.get('chat_key') || '';
-if (initialChatKey) {
-  document.getElementById('chatKey').value = initialChatKey;
-  load();
-} else if (currentKey()) {
-  showChannels();
-}
-
-refreshHint();
-renderKeyState();
+boot();
 </script>
 </body>
 </html>

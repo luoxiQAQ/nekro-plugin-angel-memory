@@ -12,7 +12,7 @@ from nekro_agent.services.user.deps import get_current_active_user, get_current_
 from nekro_agent.services.user.perm import Role, check_role, require_role
 
 from .engine import engine, storage
-from .favorability import STAGE_NAMES, EVENT_KINDS
+from .favorability import EVENT_KINDS, SEVERITY_FACTOR, SEVERITY_LABELS, STAGES, STAGE_NAMES
 from .plugin import config, plugin
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -80,6 +80,99 @@ def create_router() -> APIRouter:
             "ok": True,
             "database": str(storage.database_path),
             "fts_available": storage.get_state("fts_available", "1") == "1",
+        }
+
+    @router.get("/meta")
+    async def meta(_guard=Depends(_favor_access)) -> dict[str, Any]:
+        """把「代码里的规则 + 当前生效的配置」一次性交给 WebUI。
+
+        前端的「概览」与「规则与门控」页要靠它显示真实数据：阶段阈值、事件权重、
+        严重度系数、以及各项 FAVOR_* 配置的实际取值。这样规则改了前端会自动跟上，
+        不需要在 HTML 里重复维护一份常量。
+        """
+        return {
+            "plugin": {
+                "key": plugin.key,
+                "name": plugin.name,
+                "module_name": plugin.module_name,
+                "version": plugin.version,
+                "author": plugin.author,
+                "url": plugin.url,
+                "description": plugin.description,
+            },
+            "stages": [
+                {
+                    "name": stage.name,
+                    "low": stage.low,
+                    "high": stage.high,
+                    "guide": stage.guide,
+                    "up_threshold": stage.up_threshold,
+                    "down_threshold": stage.down_threshold,
+                    "min_hours": stage.min_hours,
+                    "idle_demote_hours": stage.idle_demote_hours,
+                }
+                for stage in STAGES
+            ],
+            "event_kinds": [
+                {
+                    "key": key,
+                    "label": definition.label,
+                    "polarity": definition.polarity,
+                    "weight": definition.weight,
+                    "hint": definition.hint,
+                }
+                for key, definition in EVENT_KINDS.items()
+            ],
+            "severity": {
+                "labels": {str(level): label for level, label in SEVERITY_LABELS.items()},
+                "factors": {str(level): factor for level, factor in SEVERITY_FACTOR.items()},
+            },
+            "limits": {
+                "min_interval_minutes": int(config.FAVOR_MIN_INTERVAL_MINUTES),
+                "max_events_per_day": int(config.FAVOR_MAX_EVENTS_PER_DAY),
+                "max_positive_per_day": int(config.FAVOR_MAX_POSITIVE_PER_DAY),
+                "max_negative_per_day": int(config.FAVOR_MAX_NEGATIVE_PER_DAY),
+                "max_evidence_chars": int(config.FAVOR_MAX_EVIDENCE_CHARS),
+                "max_event_history": int(config.FAVOR_MAX_EVENT_HISTORY),
+                "repeat_decay": float(config.FAVOR_REPEAT_DECAY),
+                "require_concrete_evidence": bool(config.FAVOR_REQUIRE_CONCRETE_EVIDENCE),
+            },
+            "rules": {
+                "min_kinds": int(config.FAVOR_STAGE_MIN_KINDS),
+                "evidence_half_life_hours": int(config.FAVOR_EVIDENCE_HALF_LIFE_HOURS),
+                "erode_interval_hours": int(config.FAVOR_ERODE_INTERVAL_HOURS),
+            },
+            "favor": {
+                "enabled": bool(config.ENABLE_FAVORABILITY),
+                "gating_enabled": bool(config.ENABLE_FAVOR_GATING),
+                "auto_enroll": bool(config.FAVOR_AUTO_ENROLL),
+                "default_stage": str(config.FAVOR_DEFAULT_STAGE),
+                "max_abs_score": int(config.FAVOR_MAX_ABS_SCORE),
+                "expose_numbers": bool(config.FAVOR_EXPOSE_NUMBERS),
+                "max_tags": int(config.FAVOR_MAX_TAGS),
+            },
+            "ai_promote": {
+                "enabled": bool(config.FAVOR_AI_PROMOTE_ENABLED),
+                "per_day": int(config.FAVOR_AI_PROMOTE_PER_DAY),
+            },
+            "rank_card": {
+                "enabled": bool(config.FAVOR_RANK_CARD_ENABLED),
+                "limit": int(config.FAVOR_RANK_LIMIT),
+                "hide_empty": bool(config.FAVOR_RANK_HIDE_EMPTY),
+                "avatar": bool(config.FAVOR_RANK_AVATAR),
+                "keyword_enabled": bool(config.FAVOR_RANK_KEYWORD_ENABLED),
+                "keywords": str(config.FAVOR_RANK_KEYWORDS),
+                "ai_trigger_enabled": bool(config.FAVOR_RANK_AI_TRIGGER_ENABLED),
+            },
+            "memory": {
+                "auto_recall": bool(config.ENABLE_AUTO_RECALL),
+                "auto_recall_limit": int(config.AUTO_RECALL_LIMIT),
+                "prompt_max_chars": int(config.PROMPT_MAX_CHARS),
+                "auto_consolidation": bool(config.ENABLE_AUTO_CONSOLIDATION),
+                "sliding_window": bool(config.ENABLE_SLIDING_WINDOW),
+                "user_profile": bool(config.ENABLE_USER_PROFILE),
+                "soul_state": bool(config.ENABLE_SOUL_STATE),
+            },
         }
 
     @router.get("/memories")
