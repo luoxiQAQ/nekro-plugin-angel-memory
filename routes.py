@@ -47,6 +47,29 @@ class FavorUpdateBody(BaseModel):
     tags: list[str] | None = None
     display_name: str | None = None
     reason: str = ""
+    # 人工设定阶段时的生效范围：
+    #   channel   —— 只改 chat_key 这一个频道
+    #   instances —— 同群/同私聊号的**所有实例**（多账号共用一个群时的默认期望）
+    #   all       —— 该用户在所有频道（跨群、跨私聊）
+    sync: str = "instances"
+
+
+#: `sync` 的合法取值
+SYNC_MODES = ("channel", "instances", "all")
+
+
+def _resolve_sync_targets(scopes: dict[str, Any], chat_key: str, mode: str) -> list[str]:
+    """把「生效范围」展开成要一起写入的 chat_key 列表（当前频道排第一）。"""
+    normalized = str(mode or "instances").strip().lower()
+    if normalized == "channel":
+        keys = [chat_key]
+    elif normalized == "all":
+        keys = [item["chat_key"] for item in scopes["instances"]] + [
+            item["chat_key"] for item in scopes["others"]
+        ]
+    else:
+        keys = [item["chat_key"] for item in scopes["instances"]]
+    return [chat_key, *[key for key in dict.fromkeys(keys) if key != chat_key]]
 
 
 async def _favor_access(request: Request, key: str = Query("", description="WebUI 访问密钥")) -> None:
@@ -324,6 +347,19 @@ def create_router() -> APIRouter:
             )
         }
 
+    @router.get("/favor/scopes")
+    async def list_favor_scopes(
+        chat_key: str,
+        user_id: str,
+        _guard=Depends(_favor_access),
+    ) -> dict[str, Any]:
+        """列出该用户在各频道的档案：同频道的其它实例 / 其它频道。
+
+        多实例部署下同一个群会被多个账号同时接收，面板只改一个实例时其它实例
+        仍按旧阶段回话。前端用这份数据把可同步的范围与「当前是否一致」展示出来。
+        """
+        return await asyncio.to_thread(storage.list_favor_scopes, chat_key=chat_key, user_id=user_id)
+
     @router.post("/favor")
     async def upsert_favor(body: FavorUpdateBody, _guard=Depends(_favor_access)) -> dict[str, Any]:
         user_id = body.user_id.strip()
@@ -335,19 +371,35 @@ def create_router() -> APIRouter:
             target = str(body.stage).strip()
             if target not in STAGE_NAMES:
                 raise HTTPException(status_code=422, detail=f"stage 无效，可选：{' / '.join(STAGE_NAMES)}")
-            profile = await asyncio.to_thread(
-                storage.set_favor_stage,
-                chat_key=body.chat_key,
-                user_id=user_id,
-                stage=target,
-                reason=body.reason or "WebUI 人工设定关系阶段",
-                display_name=body.display_name or "",
-                summary=body.summary or "",
-                interaction_hint=body.interaction_hint or "",
-                tags=body.tags,
-                max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
-            )
-            return {"mode": "set_stage", "profile": profile.to_dict()}
+            mode = str(body.sync or "instances").strip().lower()
+            if mode not in SYNC_MODES:
+                raise HTTPException(status_code=422, detail=f"sync 无效，可选：{' / '.join(SYNC_MODES)}")
+            scopes = await asyncio.to_thread(storage.list_favor_scopes, chat_key=body.chat_key, user_id=user_id)
+            profiles: list[Any] = []
+            for key in _resolve_sync_targets(scopes, body.chat_key, mode):
+                profiles.append(
+                    await asyncio.to_thread(
+                        storage.set_favor_stage,
+                        chat_key=key,
+                        user_id=user_id,
+                        stage=target,
+                        reason=body.reason or "WebUI 人工设定关系阶段",
+                        display_name=body.display_name or "",
+                        summary=body.summary or "",
+                        interaction_hint=body.interaction_hint or "",
+                        # 面板弹窗会带上「互动基调」输入框（含当前值）：显式给的就是最终值，
+                        # 空串表示「清空、恢复按阶段自动」。
+                        interaction_hint_override=body.interaction_hint is not None,
+                        tags=body.tags,
+                        max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
+                    )
+                )
+            return {
+                "mode": "set_stage",
+                "sync": mode,
+                "profile": profiles[0].to_dict(),
+                "affected": [item.to_dict() for item in profiles],
+            }
         profile, outcome, decision = await engine.record_relation_event(
             chat_key=body.chat_key,
             user_id=user_id,
@@ -401,6 +453,22 @@ def create_router() -> APIRouter:
     async def run_favor_recover_legacy(_guard=Depends(_favor_access)) -> dict[str, int]:
         """兼容旧路径：负向证据同样随衰减回归，因此与 /favor/erode 等价。"""
         return await engine.run_favor_erosion_if_due(force=True)
+
+    @router.post("/favor/align-scopes")
+    async def align_favor_scopes(
+        dry_run: bool = Query(True, description="只预览将要修改的档案，不写库"),
+        _guard=Depends(_favor_access),
+    ) -> dict[str, Any]:
+        """把「同频道其它实例」上的空壳档案对齐到该频道里最有信息量的那份。
+
+        用于收拾多实例历史漂移：面板改过一个实例的阶段，其它实例的空档案还是
+        默认阶段。只覆盖「阶段为默认值且零事件」的空壳，人工设过或有事件的不动。
+        """
+        return await asyncio.to_thread(
+            storage.align_favor_scopes,
+            dry_run=dry_run,
+            max_events=int(config.FAVOR_MAX_EVENT_HISTORY),
+        )
 
     @router.get("/facts")
     async def list_facts(

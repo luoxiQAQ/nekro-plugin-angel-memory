@@ -628,10 +628,13 @@
               <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
                 <button id="btnErode"><svg class="ico"><use href="#i-clock"/></svg>立即结算证据衰减</button>
                 <button id="btnMaintain"><svg class="ico"><use href="#i-layers"/></svg>记忆维护（归档 / 裁剪）</button>
+                <button id="btnAlignScopes"><svg class="ico"><use href="#i-layers"/></svg>对齐同群实例档案</button>
                 <button id="btnExport"><svg class="ico"><use href="#i-download"/></svg>导出全部数据</button>
               </div>
               <div class="hint muted-2" style="font-size:11.5px;margin-top:10px">
-                结算与维护是幂等的：没有到期内容时不会改动任何数据。
+                结算与维护是幂等的：没有到期内容时不会改动任何数据。<br />
+                「对齐同群实例档案」用于收拾多账号共用一个群时的历史漂移：把各实例里
+                <strong>还没被人工设定过、也没有任何关系事件</strong>的空档案，对齐到该群里最有信息量的那份。
               </div>
             </div>
           </div>
@@ -1489,9 +1492,42 @@ function closeModal() {
   $('modal').innerHTML = '';
 }
 
-function askStage(userId) {
+async function askStage(userId) {
   const profile = findProfile(userId);
   const current = profile ? profile.stage : (S.meta ? S.meta.favor.default_stage : '中立');
+  const currentHint = profile ? (profile.interaction_hint || '') : '';
+
+  /* 同步范围要靠后端算（它才知道这个群挂了几份实例档案）。拿不到就退化成
+     「只改当前频道」，不阻断主流程。 */
+  let scopes = null;
+  if (S.chatKey) {
+    try {
+      scopes = await api('/favor/scopes', { query: { chat_key: S.chatKey, user_id: userId } });
+    } catch (error) {
+      scopes = null;
+    }
+  }
+  const instances = scopes && Array.isArray(scopes.instances) ? scopes.instances : [];
+  const others = scopes && Array.isArray(scopes.others) ? scopes.others : [];
+  const siblings = instances.filter(item => !item.is_current);
+  const modes = [
+    { key: 'channel', label: '仅当前频道', note: '只影响下拉里选中的这一个频道', disabled: false },
+    {
+      key: 'instances',
+      label: siblings.length ? `同群的其它实例（另 ${siblings.length} 个频道）` : '同群的其它实例（无）',
+      note: '同一个群被多个账号同时接收时，只改一个实例会出现「这边改了、那边还是旧态度」',
+      disabled: siblings.length === 0,
+    },
+    {
+      key: 'all',
+      label: others.length ? `该用户的所有频道（另 ${others.length} 个频道）` : '该用户的所有频道（无）',
+      note: '连其它群与私聊一起改，适合「这个人在哪都该是同一个态度」',
+      disabled: others.length === 0,
+    },
+  ];
+  const defaultMode = siblings.length ? 'instances' : 'channel';
+  const drift = new Set(instances.filter(item => item.has_profile).map(item => item.stage));
+
   openModal(`
     <div class="modal-head">
       <h3>设定关系阶段</h3>
@@ -1503,6 +1539,38 @@ function askStage(userId) {
         <select id="mStage">${STAGE_NAMES.map(name => `<option value="${esc(name)}"${name === current ? ' selected' : ''}>${esc(name)}</option>`).join('')}</select>
         <div class="hint">人工设定会重置阶段内证据，并以「人工设定」记一条事件流水。</div>
       </div>
+      ${instances.length > 1 ? `
+      <div class="field">
+        <label>同群各实例当前阶段</label>
+        <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden">
+          ${instances.map(item => `
+            <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;border-top:1px solid var(--border)">
+              <span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px">${esc(item.chat_key)}</span>
+              <span style="font-size:12px;font-weight:600;color:${item.has_profile && item.stage !== current ? 'var(--red)' : 'inherit'}">${item.has_profile ? esc(item.stage) : '未建档'}</span>
+            </div>`).join('')}
+        </div>
+        <div class="hint">${drift.size > 1
+          ? '各实例阶段<strong style="color:var(--red)">不一致</strong>：选中的账号改了，别的账号回话时仍是旧态度。建议用「同群的其它实例」一起改。'
+          : '各实例阶段一致。'}</div>
+      </div>` : ''}
+      <div class="field">
+        <label>应用范围</label>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${modes.map(mode => `
+            <label style="display:flex;gap:8px;align-items:flex-start;padding:7px 10px;border:1px solid var(--border);border-radius:10px;${mode.disabled ? 'opacity:.45' : 'cursor:pointer'}">
+              <input type="radio" name="mSync" value="${mode.key}"${mode.key === defaultMode ? ' checked' : ''}${mode.disabled ? ' disabled' : ''} style="margin-top:3px" />
+              <span style="min-width:0">
+                <b style="font-size:12.5px">${esc(mode.label)}</b>
+                <em style="display:block;font-style:normal;font-size:11.5px;opacity:.7;margin-top:2px">${esc(mode.note)}</em>
+              </span>
+            </label>`).join('')}
+        </div>
+      </div>
+      <div class="field">
+        <label>互动基调（可选）</label>
+        <input type="text" id="mHint" value="${esc(currentHint)}" placeholder="留空 = 按所选阶段自动生成" />
+        <div class="hint">填了会覆盖阶段自带的基调；换阶段会自动清空，留空即恢复按阶段自动。</div>
+      </div>
       <div class="field">
         <label>理由（可选）</label>
         <input type="text" id="mReason" placeholder="例如：人工校准 / 老群友补档" />
@@ -1513,16 +1581,32 @@ function askStage(userId) {
       <button class="primary" id="mOk">保存</button>
     </div>`, modal => {
     $('mCancel').addEventListener('click', closeModal);
+    /* 旧基调属于旧阶段：一换阶段就把输入框清掉，避免把旧语气带到新阶段上 */
+    $('mStage').addEventListener('change', event => {
+      if (event.target.value !== current) $('mHint').value = '';
+    });
     $('mOk').addEventListener('click', async () => {
       const stage = $('mStage').value;
+      const picked = modal.querySelector('input[name="mSync"]:checked');
       const reason = $('mReason').value.trim() || 'WebUI 人工设定关系阶段';
       try {
-        await api('/favor', {
+        const res = await api('/favor', {
           method: 'POST',
-          body: { chat_key: S.chatKey, user_id: userId, stage, reason, display_name: displayOf(userId) },
+          body: {
+            chat_key: S.chatKey,
+            user_id: userId,
+            stage,
+            sync: picked ? picked.value : 'channel',
+            interaction_hint: $('mHint').value.trim(),
+            reason,
+            display_name: displayOf(userId),
+          },
         });
+        const count = Array.isArray(res.affected) ? res.affected.length : 1;
         closeModal();
-        toast(`已把 ${displayOf(userId)} 设定为「${stage}」`);
+        toast(count > 1
+          ? `已把 ${displayOf(userId)} 设定为「${stage}」，同步 ${count} 个频道`
+          : `已把 ${displayOf(userId)} 设定为「${stage}」`);
         await loadFavors();
         if (S.activeUser === userId) await openDrawer(userId);
       } catch (error) {
@@ -1735,6 +1819,29 @@ async function runMaintain() {
   } catch (error) { toast('维护失败：' + error.message); }
 }
 
+/* 多账号共用一个群时，每个账号各持一份关系档案。面板只改了一个实例，
+   其它实例的空档案还是默认阶段 —— 这里一次性把它们对齐到最有信息量的那份。
+   只动「阶段为默认值且零事件」的空壳，人工设过或有事件的一律不碰。 */
+async function alignScopes() {
+  let preview;
+  try {
+    preview = await api('/favor/align-scopes', { method: 'POST', query: { dry_run: 'true' } });
+  } catch (error) { toast('预览失败：' + error.message); return; }
+  const items = Array.isArray(preview.items) ? preview.items : [];
+  if (!items.length) { toast('各实例档案已一致，无需对齐'); return; }
+  const head = items.slice(0, 12).map(item => item.mode === 'profile'
+    ? `  ${item.chat_key}\n    阶段一致，仅补稳定印象 / 互动基调`
+    : `  ${item.chat_key}\n    ${item.from_stage} → ${item.to_stage}（对齐到 ${item.source_chat_key}）`
+  ).join('\n');
+  const more = items.length > 12 ? `\n  …另有 ${items.length - 12} 条` : '';
+  if (!confirm(`将把 ${items.length} 个「同群其它实例」上的空档案对齐：\n\n${head}${more}\n\n只覆盖尚未被人工设定、也没有任何关系事件的档案。继续？`)) return;
+  try {
+    const res = await api('/favor/align-scopes', { method: 'POST', query: { dry_run: 'false' } });
+    toast(`已对齐 ${res.applied || 0} 个档案`);
+    await loadFavors();
+  } catch (error) { toast('对齐失败：' + error.message); }
+}
+
 async function exportData() {
   try {
     const data = await api('/export');
@@ -1837,6 +1944,7 @@ function bindEvents() {
 
   $('btnErode').addEventListener('click', runErode);
   $('btnMaintain').addEventListener('click', runMaintain);
+  $('btnAlignScopes').addEventListener('click', alignScopes);
   $('btnExport').addEventListener('click', exportData);
   $('btnWipe').addEventListener('click', wipeChannel);
 

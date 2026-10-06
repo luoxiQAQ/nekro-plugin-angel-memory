@@ -66,6 +66,31 @@ def match_query(query: str) -> str:
     return " OR ".join(chr(34) + token + chr(34) for token in tokens)
 
 
+def channel_base(chat_key: str) -> str:
+    """从 chat_key 推导「频道本体」（把实例标识换成适配器前缀）。
+
+    部分部署会把同一个群交给多个账号同时接收消息，各自得到一份 chat_key：
+    ``<适配器>-<实例>:group_<群号>``。这些 chat_key 指向的是**同一个群**，
+    只是回答的人（bot 账号）不同::
+
+        onebot_v11-3639258463:group_1085272119
+        onebot_v11-3934926147:group_1085272119
+            ↓
+        onebot_v11:group_1085272119
+
+    刻意**保留适配器前缀**（``onebot_v11``），这样不同适配器下的同号频道
+    不会被误并成同一个「群」。单账号部署（chat_key 形如
+    ``onebot_v11-group_1085272119``，没有实例段）原样返回 —— 此时不存在
+    可同步的兄弟频道，跨实例同步会自然退化成「只改当前频道」。
+    """
+    text = str(chat_key or "").strip()
+    head, separator, tail = text.partition(":")
+    if separator and tail.startswith(("group_", "private_")):
+        adapter = head.split("-", 1)[0] if "-" in head else head
+        return f"{adapter}{separator}{tail}"
+    return text
+
+
 class AngelMemoryStorage:
     def __init__(self, database_path: Path):
         self.database_path = database_path
@@ -1181,6 +1206,7 @@ class AngelMemoryStorage:
         display_name: str = "",
         summary: str = "",
         interaction_hint: str = "",
+        interaction_hint_override: bool = False,
         tags: Iterable[str] | None = None,
         max_events: int = 12,
         last_kind: str = "manual_set",
@@ -1191,6 +1217,12 @@ class AngelMemoryStorage:
 
         `last_kind` / `label` 用于区分调用来源：人工设定走 `manual_set`，
         AI 自主提升走 `ai_promote`（后者会被每日次数上限单独统计）。
+
+        `interaction_hint_override=True` 表示调用方**显式**给了互动基调：
+        此时按原样写入，空串即「清空、恢复按阶段自动」。默认 False 时，
+        空串是「不修改」；但阶段发生变化时空串仍会清空旧基调 —— 旧基调属于
+        旧阶段，留着会在注入时盖掉 `stage_guide(新阶段)`，表现成「改了阶段
+        但说话还是旧态度」。
         """
         timestamp = float(now or time.time())
         kind_key = str(last_kind or "manual_set").strip().lower() or "manual_set"
@@ -1203,6 +1235,12 @@ class AngelMemoryStorage:
             merged_tags = list(json.loads(row["tags_json"] or "[]"))
             if tags:
                 merged_tags = normalize_tags([*merged_tags, *tags])
+            # 互动基调是「阶段之上的补充说明」。阶段一变，旧基调就属于旧阶段了：
+            # 继续留着会在注入时盖掉 stage_guide(新阶段)，表现成「面板改了阶段，
+            # 但 AI 说话还是旧态度」。所以阶段发生变化且没给新基调时，必须清空。
+            hint_text = str(interaction_hint or "").strip()
+            if not interaction_hint_override and not hint_text and target_stage == stage_before:
+                hint_text = str(row["interaction_hint"] or "")
             score = project_score(stage=target_stage, pos_weight=0.0, neg_weight=0.0)
             connection.execute(
                 "UPDATE favorability SET display_name=?,summary=?,interaction_hint=?,tags_json=?,last_reason=?,"
@@ -1210,7 +1248,7 @@ class AngelMemoryStorage:
                 (
                     str(display_name or "").strip() or row["display_name"],
                     str(summary or "").strip() or row["summary"],
-                    str(interaction_hint or "").strip() or row["interaction_hint"],
+                    hint_text,
                     json.dumps(merged_tags, ensure_ascii=False),
                     str(reason or "人工设定关系阶段")[:200], timestamp, chat_key, user_id,
                 ),
@@ -1251,6 +1289,160 @@ class AngelMemoryStorage:
                 (chat_key, user_id),
             ).fetchone()
         return self.favor_from_row(updated)
+
+    def list_favor_scopes(self, *, chat_key: str, user_id: str) -> dict[str, Any]:
+        """列出某个用户在各频道下的关系档案，按「同频道其它实例 / 其它频道」分组。
+
+        多账号部署下，同一个群会被多个账号同时接收消息，每个实例各持一份档案。
+        面板里只改当前选中的频道时，其它实例回话仍按旧阶段 —— 前端用这份数据
+        把「可一并同步的范围」列出来，让管理员一眼看到各实例当前阶段是否一致。
+        """
+        current = str(chat_key or "").strip()
+        base = channel_base(current)
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT chat_key,stage,event_count,updated_at FROM favorability WHERE user_id=?",
+                (str(user_id or "").strip(),),
+            ).fetchall()
+            known = [str(row["chat_key"] or "") for row in connection.execute("SELECT DISTINCT chat_key FROM favorability")]
+        profiles = {str(row["chat_key"]): row for row in rows}
+
+        def build(key: str) -> dict[str, Any]:
+            row = profiles.get(key)
+            return {
+                "chat_key": key,
+                "stage": str(row["stage"]) if row is not None else "",
+                "event_count": int(row["event_count"] or 0) if row is not None else 0,
+                "has_profile": row is not None,
+                "is_current": key == current,
+                "updated_at": float(row["updated_at"] or 0) if row is not None else 0.0,
+            }
+
+        candidates = sorted({*known, current} - {""})
+        instances = [build(key) for key in candidates if channel_base(key) == base]
+        others = [build(key) for key in candidates if channel_base(key) != base and key in profiles]
+        # 当前频道排最前，其余按档案新旧排，方便前端直接展示
+        instances.sort(key=lambda item: (not item["is_current"], -item["updated_at"], item["chat_key"]))
+        others.sort(key=lambda item: (-item["updated_at"], item["chat_key"]))
+        return {
+            "channel_base": base,
+            "current": current,
+            "user_id": str(user_id or "").strip(),
+            "instances": instances,
+            "others": others,
+        }
+
+    def align_favor_scopes(
+        self,
+        *,
+        dry_run: bool = True,
+        max_events: int = 12,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """把「同频道其它实例」上的空壳档案对齐到该频道里最有信息量的那份。
+
+        多账号部署下，同一个群会被多个账号同时接收：每个实例都会给发言人自动
+        建档（默认阶段、零事件）。管理员在面板里改了其中一个实例的阶段，其它
+        实例回话时仍按默认阶段，看起来就是「改了没生效」。本方法用来一次性
+        抹平这类历史漂移。
+
+        只覆盖「阶段为默认值**且**没有任何关系事件」的档案，也就是纯自动建档、
+        从未被人工设定或事件驱动过的空壳。人工设过或有事件的档案一律不动，
+        避免把有意为之的差异抹平。`dry_run=True` 时只返回计划，不写库。
+
+        计划里每条都带 `mode`：`stage` 表示阶段确实要变（会写一条「实例对齐」
+        事件）；`profile` 表示阶段本来就一致、只是稳定印象/互动基调/标签没跟上，
+        只补文字、不写事件，免得污染事件流水。
+        """
+        timestamp = float(now or time.time())
+        with self.connect() as connection:
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT chat_key,user_id,stage,summary,interaction_hint,tags_json,event_count,updated_at "
+                    "FROM favorability"
+                )
+            ]
+
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            groups.setdefault((channel_base(str(row["chat_key"])), str(row["user_id"])), []).append(row)
+
+        plan: list[dict[str, Any]] = []
+        sources: dict[tuple[str, str], dict[str, Any]] = {}
+        for group_key, members in groups.items():
+            if len(members) < 2:
+                continue
+            settled = [
+                item
+                for item in members
+                if str(item["stage"]) != DEFAULT_STAGE or int(item["event_count"] or 0) > 0
+            ]
+            if not settled:
+                continue
+            source = max(settled, key=lambda item: (int(item["event_count"] or 0), float(item["updated_at"] or 0)))
+            sources[group_key] = source
+            source_summary = str(source["summary"] or "").strip()
+            source_hint = str(source["interaction_hint"] or "").strip()
+            source_tags = list(json.loads(source["tags_json"] or "[]"))
+            for member in members:
+                if str(member["chat_key"]) == str(source["chat_key"]):
+                    continue
+                if str(member["stage"]) != DEFAULT_STAGE or int(member["event_count"] or 0) > 0:
+                    continue
+                same_stage = str(member["stage"]) == str(source["stage"])
+                # 阶段本来就一致、来源也没有可搬的文字时，这一条无事可做
+                if same_stage and not (source_summary or source_hint or source_tags):
+                    continue
+                plan.append(
+                    {
+                        "channel_base": group_key[0],
+                        "user_id": group_key[1],
+                        "chat_key": str(member["chat_key"]),
+                        "from_stage": str(member["stage"]),
+                        "to_stage": str(source["stage"]),
+                        "source_chat_key": str(source["chat_key"]),
+                        # stage  = 阶段真的要变，写一条「实例对齐」事件
+                        # profile = 阶段本来就一样，只补文字，不写事件
+                        "mode": "profile" if same_stage else "stage",
+                    }
+                )
+
+        if dry_run or not plan:
+            return {"dry_run": True, "planned": len(plan), "applied": 0, "items": plan}
+
+        applied = 0
+        for item in plan:
+            source = sources[(item["channel_base"], item["user_id"])]
+            summary = str(source["summary"] or "")
+            hint = str(source["interaction_hint"] or "")
+            tags = list(json.loads(source["tags_json"] or "[]"))
+            if item["mode"] == "profile":
+                self.update_favor_profile(
+                    chat_key=item["chat_key"],
+                    user_id=item["user_id"],
+                    summary=summary or None,
+                    interaction_hint=hint or None,
+                    tags=tags or None,
+                    now=timestamp,
+                )
+            else:
+                self.set_favor_stage(
+                    chat_key=item["chat_key"],
+                    user_id=item["user_id"],
+                    stage=str(source["stage"]),
+                    reason=f"对齐同频道其它实例档案（来源 {item['source_chat_key']}）",
+                    summary=summary,
+                    interaction_hint=hint,
+                    interaction_hint_override=True,
+                    tags=tags,
+                    max_events=max_events,
+                    last_kind="scope_align",
+                    label="实例对齐",
+                    now=timestamp,
+                )
+            applied += 1
+        return {"dry_run": False, "planned": len(plan), "applied": applied, "items": plan}
 
     def update_favor_profile(
         self,
