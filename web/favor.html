@@ -5,31 +5,69 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>天使记忆 · 控制台</title>
 <style>
+  /* 主题变量：--brand / --bg / --border / --accent-soft 由 syncPanelTheme()
+     在运行时按面板的 color-mode 覆写；这里的值只是首帧兜底
+     （对应面板 kolo 预设 + 亮色）。
+     --accent* 是历史命名，保留为 --brand* 的别名，避免改动大量既有规则。 */
   :root {
-    --bg: #f7f4ef;
-    --bg-2: #efeae2;
+    --brand: #EA5252;
+    --brand-deep: #C63F3F;
+    --accent: var(--brand);
+    --accent-deep: var(--brand-deep);
+    --accent-soft: #fdeeee;
+
+    --bg: #fafafa;
+    --bg-2: #f2f2f2;
     --panel: #ffffff;
-    --panel-2: #fbf9f6;
-    --border: #e8e1d8;
-    --border-soft: #f1ece5;
-    --text: #3c3630;
-    --text-strong: #26211d;
-    --sub: #8d867e;
-    --sub-2: #a9a29a;
-    --accent: #d97757;
-    --accent-deep: #c05f3e;
-    --accent-soft: #fbf1ec;
-    --red: #e34c4c;
-    --red-soft: #fdeeea;
-    --green: #3aa36a;
-    --green-soft: #e9f5ee;
-    --amber: #c98a20;
-    --amber-soft: #fdf4e3;
-    --shadow-sm: 0 1px 2px rgba(60, 54, 48, .05);
-    --shadow: 0 1px 2px rgba(60, 54, 48, .05), 0 10px 28px rgba(60, 54, 48, .07);
-    --radius: 14px;
-    --radius-sm: 10px;
-    --topbar-h: 62px;
+    --panel-2: #fbfbfb;
+    --border: #e4e4e4;
+    --border-soft: #efefef;
+    --text: #3d3d3d;
+    --text-strong: #1f1f1f;
+    --sub: #7d7d7d;
+    --sub-2: #a2a2a2;
+
+    --red: #d64545;
+    --red-soft: #fdeeee;
+    --red-border: #f2d5d1;
+    --green: #2e9e5b;
+    --green-soft: #eaf6ef;
+    --amber: #b8860b;
+    --amber-soft: #fdf6e3;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .05);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .05), 0 10px 28px rgba(0, 0, 0, .06);
+    --radius: 12px;
+    --radius-sm: 9px;
+    --topbar-h: 52px;
+  }
+  /* 暗色：纸张色与面板 generateBackgroundColors('dark') 的 #2f2f2f 对齐 */
+  html[data-mode="dark"] {
+    --bg: #2f2f2f;
+    --panel: #3a3a3a;
+    --panel-2: #333333;
+    --bg-2: #383838;
+    --border: #4b4b4b;
+    --border-soft: #454545;
+    --text: #dedede;
+    --text-strong: #f6f6f6;
+    --sub: #a6a6a6;
+    --sub-2: #8b8b8b;
+    --red: #ff6b6b;
+    --red-soft: rgba(255, 107, 107, .14);
+    --red-border: rgba(255, 107, 107, .38);
+    --green: #5fd18a;
+    --green-soft: rgba(95, 209, 138, .14);
+    --amber: #e0b34a;
+    --amber-soft: rgba(224, 179, 74, .14);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 28px rgba(0, 0, 0, .35);
+  }
+  html[data-mode="dark"] { color-scheme: dark; }
+  html[data-mode="dark"] ::-webkit-scrollbar { width: 10px; height: 10px; }
+  html[data-mode="dark"] ::-webkit-scrollbar-track { background: transparent; }
+  html[data-mode="dark"] ::-webkit-scrollbar-thumb {
+    background: #555; border-radius: 6px; border: 2px solid var(--bg);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -48,29 +86,19 @@
   .ico { width: 16px; height: 16px; flex: 0 0 auto; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
   .ico-lg { width: 20px; height: 20px; }
 
-  /* ---------------------------------------------------------------- 顶栏 */
+  /* ------------------------------------------------------------ 顶部工具条
+     插件名与版本已由面板自身的插件详情页头部展示，这里刻意不再放品牌区，
+     避免出现「双标题」；本条只保留频道上下文与几个操作按钮。 */
   .app { min-height: 100vh; display: flex; flex-direction: column; }
   .topbar {
     position: sticky; top: 0; z-index: 40;
-    display: flex; align-items: center; gap: 14px;
-    padding: 10px 20px; min-height: var(--topbar-h);
-    background: rgba(255, 255, 255, .9);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 18px; min-height: var(--topbar-h);
+    background: var(--bg);
+    border-bottom: 1px solid var(--border-soft);
   }
-  .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
-  .brand-mark {
-    width: 36px; height: 36px; border-radius: 11px; flex: 0 0 auto;
-    background: linear-gradient(150deg, var(--accent) 0%, #e39a7c 100%);
-    color: #fff; display: grid; place-items: center;
-    box-shadow: 0 4px 12px rgba(217, 119, 87, .3);
-  }
-  .brand-text { min-width: 0; }
-  .brand-title { font-size: 15px; font-weight: 600; color: var(--text-strong); letter-spacing: .2px; }
-  .brand-meta {
-    font-size: 11px; color: var(--sub-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
+  .ctx { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .ctx-label { font-size: 12px; color: var(--sub); white-space: nowrap; }
   .topbar-spacer { flex: 1 1 auto; }
   .topbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -80,11 +108,11 @@
     border: 1px solid var(--border); background: var(--panel); color: var(--sub);
   }
   .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--sub-2); }
-  .pill.ok { color: var(--green); border-color: #cfe9da; background: var(--green-soft); }
+  .pill.ok { color: var(--green); border-color: transparent; background: var(--green-soft); }
   .pill.ok .dot { background: var(--green); }
-  .pill.warn { color: var(--amber); border-color: #f0dfb8; background: var(--amber-soft); }
+  .pill.warn { color: var(--amber); border-color: transparent; background: var(--amber-soft); }
   .pill.warn .dot { background: var(--amber); }
-  .pill.bad { color: var(--red); border-color: #f6cfc9; background: var(--red-soft); }
+  .pill.bad { color: var(--red); border-color: transparent; background: var(--red-soft); }
   .pill.bad .dot { background: var(--red); }
 
   select, input[type=text], input[type=number], textarea {
@@ -94,7 +122,7 @@
     transition: border-color .15s, box-shadow .15s;
   }
   select:focus, input:focus, textarea:focus {
-    border-color: var(--accent); box-shadow: 0 0 0 3px rgba(217, 119, 87, .12);
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
   }
   select { cursor: pointer; max-width: 340px; }
   textarea { resize: vertical; min-height: 74px; width: 100%; }
@@ -115,33 +143,33 @@
   button.primary:hover { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
   button.ghost { background: transparent; border-color: transparent; color: var(--sub); padding: 6px 8px; }
   button.ghost:hover { background: var(--accent-soft); color: var(--accent-deep); }
-  button.danger { color: var(--red); border-color: #f2d5d1; }
+  button.danger { color: var(--red); border-color: var(--red-border); }
   button.danger:hover { background: var(--red-soft); border-color: var(--red); color: var(--red); }
   button.tiny { padding: 4px 9px; font-size: 12px; border-radius: 8px; }
 
   /* -------------------------------------------------------------- 主体布局 */
-  .body { flex: 1 1 auto; display: grid; grid-template-columns: 218px minmax(0, 1fr); align-items: start; }
+  .body { flex: 1 1 auto; display: grid; grid-template-columns: 212px minmax(0, 1fr); align-items: start; }
   .sidebar {
     position: sticky; top: var(--topbar-h);
     height: calc(100vh - var(--topbar-h));
-    overflow-y: auto; padding: 16px 12px 24px;
-    background: var(--panel-2); border-right: 1px solid var(--border);
-    display: flex; flex-direction: column; gap: 6px;
+    overflow-y: auto; padding: 12px 10px 22px;
+    /* 实色而非透明：sticky 元素带透明底时，Chromium 的图层合成可能残留旧底 */
+    background: var(--bg); border-right: 1px solid var(--border-soft);
+    display: flex; flex-direction: column; gap: 2px;
   }
   .side-label {
-    font-size: 11px; letter-spacing: .12em; color: var(--sub-2);
-    padding: 4px 10px 8px; text-transform: uppercase;
+    font-size: 11px; letter-spacing: .1em; color: var(--sub-2);
+    padding: 2px 10px 8px;
   }
   .nav-item {
     display: flex; align-items: center; gap: 10px;
-    padding: 9px 11px; border-radius: var(--radius-sm);
+    padding: 8px 10px; border-radius: var(--radius-sm);
     color: var(--text); cursor: pointer; border: 1px solid transparent;
-    font-size: 13.5px; transition: background .15s, color .15s, border-color .15s;
+    font-size: 13.5px; transition: background .15s, color .15s;
   }
   .nav-item:hover { background: var(--accent-soft); color: var(--accent-deep); }
   .nav-item.active {
-    background: var(--panel); color: var(--accent-deep);
-    border-color: var(--border); box-shadow: var(--shadow-sm); font-weight: 600;
+    background: var(--accent-soft); color: var(--accent-deep); font-weight: 600;
   }
   .nav-item.active .ico { color: var(--accent); }
   .nav-count {
@@ -149,15 +177,15 @@
     background: var(--bg-2); border-radius: 999px; padding: 1px 7px;
     font-variant-numeric: tabular-nums;
   }
-  .nav-item.active .nav-count { background: var(--accent-soft); color: var(--accent-deep); }
+  .nav-item.active .nav-count { background: var(--accent); color: #fff; }
   .side-foot {
-    margin-top: auto; padding: 12px;
-    background: var(--panel); border: 1px solid var(--border);
+    margin-top: auto; padding: 11px 12px;
+    background: var(--panel); border: 1px solid var(--border-soft);
     border-radius: var(--radius-sm); font-size: 11.5px; color: var(--sub);
   }
   .side-foot b { display: block; color: var(--text); font-size: 12.5px; margin-bottom: 3px; }
 
-  .main { padding: 22px 26px 72px; min-width: 0; }
+  .main { padding: 20px 24px 64px; min-width: 0; }
   .page { display: none; }
   .page.active { display: block; animation: fade .18s ease; }
   @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
@@ -286,24 +314,24 @@
   .banner {
     display: flex; align-items: flex-start; gap: 10px;
     padding: 12px 14px; border-radius: var(--radius);
-    background: var(--amber-soft); border: 1px solid #f0dfb8; color: #8a5f14;
+    background: var(--amber-soft); border: 1px solid transparent; color: var(--amber);
     font-size: 12.5px; margin-bottom: 16px;
   }
-  .banner.bad { background: var(--red-soft); border-color: #f6cfc9; color: #a33535; }
+  .banner.bad { background: var(--red-soft); border-color: transparent; color: var(--red); }
   .banner .ico { margin-top: 2px; flex: 0 0 auto; }
   .banner .grow { flex: 1 1 auto; }
   .banner .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 
   /* 侧滑详情 */
   .drawer-mask {
-    position: fixed; inset: 0; background: rgba(60, 54, 48, .28);
+    position: fixed; inset: 0; background: rgba(0, 0, 0, .4);
     opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 60;
   }
   .drawer-mask.show { opacity: 1; pointer-events: auto; }
   .drawer {
     position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 94vw);
     background: var(--panel); border-left: 1px solid var(--border);
-    box-shadow: -12px 0 40px rgba(60, 54, 48, .12);
+    box-shadow: -12px 0 40px rgba(0, 0, 0, .16);
     transform: translateX(102%); transition: transform .24s cubic-bezier(.3, .8, .3, 1);
     z-index: 61; display: flex; flex-direction: column;
   }
@@ -330,7 +358,7 @@
 
   /* 弹窗 */
   .modal-mask {
-    position: fixed; inset: 0; background: rgba(60, 54, 48, .32);
+    position: fixed; inset: 0; background: rgba(0, 0, 0, .45);
     display: none; align-items: center; justify-content: center; z-index: 80; padding: 20px;
   }
   .modal-mask.show { display: flex; }
@@ -359,10 +387,10 @@
 
   #toast {
     position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%) translateY(8px);
-    background: #3c3630; color: #fff; padding: 10px 18px; border-radius: 11px;
+    background: var(--text-strong); color: var(--bg); padding: 10px 18px; border-radius: 11px;
     font-size: 13px; opacity: 0; transition: opacity .2s, transform .2s;
     pointer-events: none; max-width: 78vw; white-space: pre-wrap; z-index: 90;
-    box-shadow: 0 8px 28px rgba(60, 54, 48, .28);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .28);
   }
   #toast.show { opacity: 1; transform: translateX(-50%); }
 
@@ -373,13 +401,14 @@
     .body { grid-template-columns: minmax(0, 1fr); }
     .sidebar {
       position: static; height: auto; flex-direction: row; align-items: center;
-      overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border);
+      overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border-soft);
       padding: 10px 12px; gap: 6px;
     }
     .side-label, .side-foot, .nav-count { display: none; }
     .nav-item { white-space: nowrap; }
     .main { padding: 18px 14px 60px; }
     .topbar { flex-wrap: wrap; }
+    .ctx-label { display: none; }
     .topbar-spacer { display: none; }
     .topbar-actions { width: 100%; justify-content: flex-start; }
   }
@@ -414,22 +443,17 @@
 
 <div class="app">
   <header class="topbar">
-    <div class="brand">
-      <div class="brand-mark"><svg class="ico ico-lg"><use href="#i-heart"/></svg></div>
-      <div class="brand-text">
-        <div class="brand-title" id="brandTitle">天使记忆</div>
-        <div class="brand-meta" id="brandMeta">luoxiQAQ.nekro_memory_angel</div>
-      </div>
+    <div class="ctx">
+      <span class="ctx-label">当前频道</span>
+      <select id="channelSelect" title="选择要查看的频道" disabled><option>读取频道…</option></select>
     </div>
-
-    <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">连接中…</span></span>
 
     <div class="topbar-spacer"></div>
 
     <div class="topbar-actions">
-      <select id="channelSelect" title="选择频道" disabled><option>读取频道…</option></select>
+      <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">连接中…</span></span>
+      <button class="ghost" id="btnOpen" title="在新标签页打开（适合投屏或分享）"><svg class="ico"><use href="#i-external"/></svg></button>
       <button id="btnRefresh" title="重新载入当前频道的全部数据"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
-      <button id="btnOpen" title="在新标签页打开（独立页面，适合投屏或分享）"><svg class="ico"><use href="#i-external"/></svg>在新页面打开</button>
     </div>
   </header>
 
@@ -638,7 +662,7 @@
               </div>
             </div>
           </div>
-          <div class="card" style="border-color:#f2d5d1">
+          <div class="card" style="border-color:var(--red-border)">
             <div class="card-head">
               <h3 style="color:var(--red)">危险操作</h3>
               <div class="spacer"></div>
@@ -732,6 +756,71 @@ function writeStore(key, value) {
 }
 
 let KEY = PARAMS.get('key') || readStore(KEY_STORE);
+
+/* ------------------------------------------------------ 跟随面板主题 */
+
+/* 面板主题预设主色，与 frontend/src/theme/palette.ts 的 PRESETS 对应 */
+const PANEL_BRAND = {
+  kolo:   { light: '#EA5252', dark: '#E05252' },
+  sakura: { light: '#FF9BB3', dark: '#F06292' },
+  aqua:   { light: '#5D9CEC', dark: '#4A89DC' },
+  matcha: { light: '#66BB6A', dark: '#4CAF50' },
+  lilac:  { light: '#9575CD', dark: '#7E57C2' },
+};
+
+function hexToRgb(hex) {
+  const value = String(hex || '').trim().replace('#', '');
+  const full = value.length === 3 ? value.split('').map(c => c + c).join('') : value;
+  const n = parseInt(full || '000000', 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+/* 按 ratio 把 a 混向 b（ratio=1 得到 b），用于从主色推导深浅色 */
+function mixHex(a, b, ratio) {
+  const x = hexToRgb(a);
+  const y = hexToRgb(b);
+  const t = Math.max(0, Math.min(1, Number(ratio) || 0));
+  const ch = (p, q) => Math.round(p + (q - p) * t);
+  return '#' + [ch(x.r, y.r), ch(x.g, y.g), ch(x.b, y.b)]
+    .map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+/* 读面板 zustand persist 的主题态：{ state: { mode, presetId, lightBrand, darkBrand } } */
+function readPanelTheme() {
+  try {
+    const raw = localStorage.getItem('color-mode');
+    if (!raw) return {};
+    return (JSON.parse(raw) || {}).state || {};
+  } catch (error) {
+    return {};
+  }
+}
+
+/* 让本页与面板同色同明暗。
+   背景/边框/文字等「灰阶」交给样式表里的 html[data-mode] 规则
+   （取值与面板 palette.ts 的 generateBackgroundColors 一致）；
+   这里只内联覆写「由主色推导」的三个变量，避免两处打架。 */
+function syncPanelTheme() {
+  const state = readPanelTheme();
+  const mode = state.mode === 'dark' ? 'dark' : 'light';
+  const preset = PANEL_BRAND[state.presetId] || PANEL_BRAND.kolo;
+  const custom = state.presetId === 'custom'
+    ? (mode === 'dark' ? state.darkBrand : state.lightBrand)
+    : '';
+  const brand = String(custom || (mode === 'dark' ? preset.dark : preset.light) || PANEL_BRAND.kolo.light);
+  const rgb = hexToRgb(brand);
+  const root = document.documentElement;
+  root.dataset.mode = mode;
+  root.style.setProperty('--brand', brand);
+  root.style.setProperty('--brand-deep', mixHex(brand, mode === 'dark' ? '#ffffff' : '#000000', mode === 'dark' ? 0.16 : 0.18));
+  root.style.setProperty('--accent-soft', 'rgba(' + rgb.r + ', ' + rgb.g + ', ' + rgb.b + ', ' + (mode === 'dark' ? 0.2 : 0.12) + ')');
+}
+
+syncPanelTheme();
+/* 面板里切换明暗/预设时，同源 iframe 会收到 storage 事件 */
+window.addEventListener('storage', event => {
+  if (!event.key || event.key === 'color-mode') syncPanelTheme();
+});
 
 const S = {
   page: 'overview',
@@ -833,17 +922,26 @@ function stageBadge(stage) {
 
 function buildUrl(path, query) {
   const p = new URLSearchParams(query || {});
+  /* 只有插件自己的访问密钥走 URL；管理员令牌改走 Authorization 头，
+     避免 JWT 留在地址栏、浏览器历史和服务器访问日志里。 */
   if (KEY) p.set('key', KEY);
-  if (TOKEN) p.set('token', TOKEN);
   const qs = p.toString();
   return PLUGIN_BASE + path + (qs ? '?' + qs : '');
+}
+
+function authHeaders(extra) {
+  const headers = Object.assign({}, extra || {});
+  /* 内嵌在面板里时与面板同源，能读到它的 JWT；带上后
+     /status、/memories 这类 @require_role(Role.Admin) 端点也能通过。 */
+  if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
+  return headers;
 }
 
 async function api(path, options) {
   const opts = options || {};
   const res = await fetch(buildUrl(path, opts.query), {
     method: opts.method || 'GET',
-    headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: authHeaders(opts.body ? { 'Content-Type': 'application/json' } : null),
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (!res.ok) {
@@ -904,8 +1002,8 @@ async function loadMeta() {
     S.meta = meta;
     if (Array.isArray(meta.stages) && meta.stages.length) STAGE_NAMES = meta.stages.map(s => s.name);
     const p = meta.plugin || {};
-    $('brandTitle').textContent = p.name || '天使记忆';
-    $('brandMeta').textContent = `${p.key || ''} · v${p.version || '?'} · ${p.author || ''}`;
+    /* 品牌区已移除（面板自身会显示插件名与版本），这里只同步标签页标题。 */
+    document.title = (p.name || '天使记忆') + ' · 控制台';
     return true;
   } catch (error) {
     S.meta = null;
@@ -1779,7 +1877,7 @@ async function renderCard() {
   const img = $('card');
   const empty = $('cardEmpty');
   try {
-    const res = await fetch(buildUrl('/favor/card', { chat_key: S.chatKey, limit: '20' }));
+    const res = await fetch(buildUrl('/favor/card', { chat_key: S.chatKey, limit: '20' }), { headers: authHeaders() });
     if (!res.ok) {
       let detail = `${res.status} ${res.statusText}`;
       try { const data = await res.json(); if (data.detail) detail = data.detail; } catch (error) { /* ignore */ }

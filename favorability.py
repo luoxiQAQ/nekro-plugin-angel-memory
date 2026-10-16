@@ -11,6 +11,9 @@
 并新增「AI 自主提升」通道（见 main.py 的「提升关系阶段」工具）。
 降级侧阈值**保持原值不动** —— 放宽的是「更容易变好」，不是「更容易变坏」。
 
+2026-10-16 再次放宽（第二轮）：升级阈值再降约 40%、最短停留时间减半。
+降级侧阈值与 `idle_demote_hours` 依旧**一律不动**。
+
 本模块只做纯计算，不碰数据库、不依赖 NekroAgent 框架，便于单独跑单测。
 """
 
@@ -38,19 +41,20 @@ class StageDef:
 
 # 由低到高。索引即阶段等级 rank。
 #
-# 阈值口径（2026-10-06 放宽）：升级侧刻意做得宽松，让 AI 的判断更容易落地；
-# 降级侧保持原值不动，避免关系因为一时情绪就掉级。
+# 阈值口径（2026-10-16 第二轮放宽）：升级侧刻意做得宽松，让 AI 的判断更容易落地；
+# 降级侧阈值与 idle_demote_hours 保持原值不动，避免关系因为一时情绪或冷落就掉级。
 # 单次事件权重参考：banter 0.8 / shared_interest 1.0 / insight·gift 1.5 /
 # help·support·deep_talk 2.0 / loyalty 2.2 / promise_kept 2.5（严重度 2 时）。
+# 即：中立→亲近现在一次 deep_talk + 一次 banter（2.0 + 0.8 = 2.8 ≥ 1.8）即可达成。
 STAGES: tuple[StageDef, ...] = (
     StageDef(
         name="排斥",
         low=-100,
         high=-60,
         guide="保持距离，谨慎回应，必要时明确边界；不要主动示好。",
-        up_threshold=3.0,
+        up_threshold=1.8,
         down_threshold=0.0,
-        min_hours=4.0,
+        min_hours=2.0,
         idle_demote_hours=0.0,
     ),
     StageDef(
@@ -58,9 +62,9 @@ STAGES: tuple[StageDef, ...] = (
         low=-60,
         high=-20,
         guide="维持礼貌但克制，先观察，不要过度投入，也不要翻旧账。",
-        up_threshold=2.0,
+        up_threshold=1.2,
         down_threshold=3.0,
-        min_hours=3.0,
+        min_hours=1.5,
         idle_demote_hours=720.0,
     ),
     StageDef(
@@ -68,9 +72,9 @@ STAGES: tuple[StageDef, ...] = (
         low=-20,
         high=20,
         guide="正常友好互动，不主动施加亲密语气，也不冷淡。",
-        up_threshold=2.5,
+        up_threshold=1.8,
         down_threshold=3.0,
-        min_hours=1.0,
+        min_hours=0.5,
         idle_demote_hours=1440.0,
     ),
     StageDef(
@@ -78,9 +82,9 @@ STAGES: tuple[StageDef, ...] = (
         low=20,
         high=60,
         guide="可以更自然、更积极地回应，适度体现熟悉感与默契。",
-        up_threshold=5.0,
+        up_threshold=3.0,
         down_threshold=4.0,
-        min_hours=3.0,
+        min_hours=1.5,
         idle_demote_hours=2160.0,
     ),
     StageDef(
@@ -88,9 +92,9 @@ STAGES: tuple[StageDef, ...] = (
         low=60,
         high=85,
         guide="可明显更热情，主动照顾对方体验并记住其偏好。",
-        up_threshold=8.0,
+        up_threshold=5.0,
         down_threshold=6.0,
-        min_hours=6.0,
+        min_hours=3.0,
         idle_demote_hours=2880.0,
     ),
     StageDef(
@@ -100,7 +104,7 @@ STAGES: tuple[StageDef, ...] = (
         guide="可使用显著亲密与偏爱语气，但仍需遵守角色边界。",
         up_threshold=0.0,  # 最高阶段，无法再升级
         down_threshold=8.0,
-        min_hours=24.0,
+        min_hours=12.0,
         idle_demote_hours=4320.0,
     ),
 )
